@@ -14,7 +14,8 @@ DB_PATH = Path(__file__).parent / "testing_app.db"
 DEFAULT_ADMIN_USERNAME = "admin"
 DEFAULT_ADMIN_PASSWORD = "admin123"
 MAX_VIOLATIONS = 5
-PASSING_RATIO = 0.6
+DEFAULT_PASSING_PERCENT = 60.0
+DEFAULT_TEST_DURATION_SECONDS = 900
 
 
 def hash_password(password: str) -> str:
@@ -133,6 +134,19 @@ class DatabaseManager:
                 )
                 """
             )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS test_rules (
+                    topic_id INTEGER NOT NULL,
+                    level_id INTEGER NOT NULL,
+                    duration_seconds INTEGER NOT NULL,
+                    passing_percent REAL NOT NULL,
+                    PRIMARY KEY (topic_id, level_id),
+                    FOREIGN KEY(topic_id) REFERENCES topics(id),
+                    FOREIGN KEY(level_id) REFERENCES levels(id)
+                )
+                """
+            )
 
             cursor.execute("SELECT COUNT(*) AS count FROM admins")
             admin_count = cursor.fetchone()["count"]
@@ -247,6 +261,44 @@ class DatabaseManager:
                 """
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def get_test_rule(self, topic_id: int, level_id: int):
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT duration_seconds, passing_percent
+                FROM test_rules
+                WHERE topic_id = ? AND level_id = ?
+                """,
+                (topic_id, level_id),
+            ).fetchone()
+        if row is None:
+            return {
+                "duration_seconds": DEFAULT_TEST_DURATION_SECONDS,
+                "passing_percent": DEFAULT_PASSING_PERCENT,
+            }
+        return dict(row)
+
+    def save_test_rule(
+        self,
+        topic_id: int,
+        level_id: int,
+        duration_seconds: int,
+        passing_percent: float,
+    ):
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO test_rules (topic_id, level_id, duration_seconds, passing_percent)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(topic_id, level_id)
+                DO UPDATE SET
+                    duration_seconds = excluded.duration_seconds,
+                    passing_percent = excluded.passing_percent
+                """,
+                (topic_id, level_id, duration_seconds, passing_percent),
+            )
+            connection.commit()
 
     def save_attempt(
         self,
@@ -450,10 +502,12 @@ class AdminPanelWindow:
         ttk.Label(top_row, text="Topic").grid(row=0, column=0, sticky="w", padx=(0, 8))
         self.topic_combo = ttk.Combobox(top_row, state="readonly")
         self.topic_combo.grid(row=0, column=1, sticky="ew", padx=(0, 16))
+        self.topic_combo.bind("<<ComboboxSelected>>", self._on_rule_selection_change)
 
         ttk.Label(top_row, text="Level").grid(row=0, column=2, sticky="w", padx=(0, 8))
         self.level_combo = ttk.Combobox(top_row, state="readonly")
         self.level_combo.grid(row=0, column=3, sticky="ew")
+        self.level_combo.bind("<<ComboboxSelected>>", self._on_rule_selection_change)
 
         top_row.columnconfigure(1, weight=1)
         top_row.columnconfigure(3, weight=1)
@@ -489,6 +543,21 @@ class AdminPanelWindow:
             row=7, column=0, columnspan=2, sticky="ew", pady=(12, 0)
         )
         question_frame.columnconfigure(1, weight=1)
+
+        rules_frame = ttk.LabelFrame(main, text="Test Rules (Per Topic + Level)", padding=10)
+        rules_frame.pack(fill="x", pady=(0, 8))
+
+        ttk.Label(rules_frame, text="Duration (minutes)").grid(row=0, column=0, sticky="w")
+        self.duration_entry = ttk.Entry(rules_frame, width=12)
+        self.duration_entry.grid(row=0, column=1, sticky="w", padx=(8, 18))
+
+        ttk.Label(rules_frame, text="Passing percent").grid(row=0, column=2, sticky="w")
+        self.passing_percent_entry = ttk.Entry(rules_frame, width=12)
+        self.passing_percent_entry.grid(row=0, column=3, sticky="w", padx=(8, 18))
+
+        ttk.Button(rules_frame, text="Save Rules", command=self._save_test_rule).grid(
+            row=0, column=4, sticky="w"
+        )
 
         overview_frame = ttk.LabelFrame(main, text="Question Counts", padding=8)
         overview_frame.pack(fill="both", expand=True, pady=(8, 0))
@@ -551,6 +620,7 @@ class AdminPanelWindow:
             self.topic_combo.set(topic_options[0])
         if level_options and not self.level_combo.get():
             self.level_combo.set(level_options[0])
+        self._load_test_rule_into_form()
 
     def refresh_question_overview(self):
         for item in self.overview_tree.get_children():
@@ -622,6 +692,64 @@ class AdminPanelWindow:
         self.refresh_question_overview()
         show_info(self.window, "Success", "Question added.")
 
+    def _extract_combo_id(self, raw_value: str):
+        value = raw_value.strip()
+        if not value:
+            return None
+        try:
+            return int(value.split(":")[0])
+        except ValueError:
+            return None
+
+    def _on_rule_selection_change(self, _event=None):
+        self._load_test_rule_into_form()
+
+    def _load_test_rule_into_form(self):
+        topic_id = self._extract_combo_id(self.topic_combo.get())
+        level_id = self._extract_combo_id(self.level_combo.get())
+        if topic_id is None or level_id is None:
+            return
+        rule = self.db.get_test_rule(topic_id, level_id)
+        duration_minutes = max(1, int(round(rule["duration_seconds"] / 60)))
+        self.duration_entry.delete(0, tk.END)
+        self.duration_entry.insert(0, str(duration_minutes))
+        self.passing_percent_entry.delete(0, tk.END)
+        self.passing_percent_entry.insert(0, f'{float(rule["passing_percent"]):.2f}')
+
+    def _save_test_rule(self):
+        topic_id = self._extract_combo_id(self.topic_combo.get())
+        level_id = self._extract_combo_id(self.level_combo.get())
+        if topic_id is None or level_id is None:
+            show_error(self.window, "Validation Error", "Select topic and level first.")
+            return
+
+        duration_raw = self.duration_entry.get().strip()
+        passing_raw = self.passing_percent_entry.get().strip()
+        try:
+            duration_minutes = int(duration_raw)
+        except ValueError:
+            show_error(self.window, "Validation Error", "Duration must be an integer in minutes.")
+            return
+        try:
+            passing_percent = float(passing_raw)
+        except ValueError:
+            show_error(self.window, "Validation Error", "Passing percent must be a number.")
+            return
+        if duration_minutes < 1:
+            show_error(self.window, "Validation Error", "Duration must be at least 1 minute.")
+            return
+        if passing_percent <= 0 or passing_percent > 100:
+            show_error(self.window, "Validation Error", "Passing percent must be between 0 and 100.")
+            return
+
+        self.db.save_test_rule(
+            topic_id=topic_id,
+            level_id=level_id,
+            duration_seconds=duration_minutes * 60,
+            passing_percent=passing_percent,
+        )
+        show_info(self.window, "Success", "Test rules saved for selected topic and level.")
+
 
 class TestSessionWindow:
     def __init__(
@@ -633,6 +761,8 @@ class TestSessionWindow:
         topic_name: str,
         level_id: int,
         level_name: str,
+        duration_seconds: int,
+        passing_percent: float,
         on_complete,
     ):
         self.parent = parent
@@ -642,6 +772,8 @@ class TestSessionWindow:
         self.topic_name = topic_name
         self.level_id = level_id
         self.level_name = level_name
+        self.duration_seconds = duration_seconds
+        self.passing_percent = passing_percent
         self.on_complete = on_complete
 
         self.started_at = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -651,8 +783,10 @@ class TestSessionWindow:
         self.session_ended = False
         self.currently_out_of_focus = False
         self.focus_monitor_job = None
+        self.timer_job = None
         self.anti_cheat_armed = False
         self.anti_cheat_arm_at = time.monotonic() + 1.5
+        self.remaining_seconds = self.duration_seconds
 
         base_questions = self.db.get_questions(topic_id, level_id)
         if not base_questions:
@@ -687,6 +821,9 @@ class TestSessionWindow:
         )
         self.violation_label.pack(anchor="w", pady=(3, 10))
 
+        self.timer_label = ttk.Label(content, text="", foreground="darkblue")
+        self.timer_label.pack(anchor="w", pady=(0, 8))
+
         self.warning_label = ttk.Label(content, text="", foreground="red")
         self.warning_label.pack(anchor="w", pady=(0, 8))
 
@@ -711,6 +848,8 @@ class TestSessionWindow:
         self.window.grab_set()
         self.window.focus_force()
         self._render_question()
+        self._update_timer_label()
+        self._schedule_timer_tick()
         self._poll_focus_state()
 
     def _build_shuffled_session(self, base_questions: list[dict]):
@@ -831,6 +970,26 @@ class TestSessionWindow:
             return False
         return focused_widget.winfo_toplevel() == self.window
 
+    def _update_timer_label(self):
+        minutes, seconds = divmod(max(0, self.remaining_seconds), 60)
+        self.timer_label.config(
+            text=(
+                f"Time remaining: {minutes:02d}:{seconds:02d} "
+                f"| Pass threshold: {self.passing_percent:.2f}%"
+            )
+        )
+
+    def _schedule_timer_tick(self):
+        if self.session_ended:
+            return
+        self._update_timer_label()
+        if self.remaining_seconds <= 0:
+            self.warning_label.config(text="Time is up. The test ended automatically.")
+            self._finish_session(status="failed_timeout")
+            return
+        self.remaining_seconds -= 1
+        self.timer_job = self.window.after(1000, self._schedule_timer_tick)
+
     def _register_violation(self):
         if self.currently_out_of_focus or self.session_ended:
             return
@@ -870,13 +1029,17 @@ class TestSessionWindow:
         if self.focus_monitor_job is not None:
             self.window.after_cancel(self.focus_monitor_job)
             self.focus_monitor_job = None
+        if self.timer_job is not None:
+            self.window.after_cancel(self.timer_job)
+            self.timer_job = None
 
         score = self._calculate_score()
         total_questions = len(self.questions)
-        passed = status == "completed" and score >= int(total_questions * PASSING_RATIO + 0.999)
+        required_correct = int((total_questions * self.passing_percent / 100) + 0.999)
+        passed = status == "completed" and score >= required_correct
         ended_at = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        if status == "failed_anticheat":
+        if status in {"failed_anticheat", "failed_timeout"}:
             passed = False
 
         self.db.save_attempt(
@@ -898,13 +1061,20 @@ class TestSessionWindow:
                 "Test Ended",
                 "You exceeded the allowed anti-cheat violations. You failed this test.",
             )
+        elif status == "failed_timeout":
+            show_error(
+                self.window,
+                "Time Expired",
+                "Test time has expired. The attempt is marked as failed.",
+            )
         else:
             passed_text = "PASSED" if passed else "FAILED"
             show_info(
                 self.window,
                 "Test Complete",
                 f"Score: {score}/{total_questions}\nResult: {passed_text}\n"
-                f"Violations: {self.violations}",
+                f"Violations: {self.violations}\n"
+                f"Required pass threshold: {self.passing_percent:.2f}%",
             )
 
         self.window.destroy()
@@ -1062,6 +1232,7 @@ class TestingApp(tk.Tk):
         topic_name = topic_raw.split(": ", 1)[1]
         level_id = int(level_raw.split(":")[0])
         level_name = level_raw.split(": ", 1)[1]
+        test_rule = self.db.get_test_rule(topic_id, level_id)
 
         questions = self.db.get_questions(topic_id, level_id)
         if not questions:
@@ -1082,6 +1253,8 @@ class TestingApp(tk.Tk):
                 topic_name=topic_name,
                 level_id=level_id,
                 level_name=level_name,
+                duration_seconds=test_rule["duration_seconds"],
+                passing_percent=test_rule["passing_percent"],
                 on_complete=self._on_test_complete,
             )
         except ValueError as error:
