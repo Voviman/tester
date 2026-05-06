@@ -7,6 +7,7 @@ import smtplib
 from email.message import EmailMessage
 from enum import Enum
 from typing import Annotated
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import jwt
 from fastapi import Depends, FastAPI, HTTPException, status
@@ -22,8 +23,30 @@ def normalize_database_url(url: str) -> str:
         return "sqlite:///./platform_backend.db"
     if value.startswith("postgres://"):
         value = value.replace("postgres://", "postgresql://", 1)
+    if value.startswith("postgresql+psycopg2://"):
+        value = value.replace("postgresql+psycopg2://", "postgresql+psycopg://", 1)
     if value.startswith("postgresql://"):
         value = value.replace("postgresql://", "postgresql+psycopg://", 1)
+    if value.startswith("postgresql+psycopg://"):
+        split_value = urlsplit(value)
+        raw_pairs = parse_qsl(split_value.query, keep_blank_values=True)
+        filtered_pairs = []
+        for key, query_value in raw_pairs:
+            # Some providers show helper params for ORMs/poolers that psycopg/libpq does not accept.
+            if key.lower() in {"pgbouncer", "connection_limit", "pool_timeout"}:
+                continue
+            filtered_pairs.append((key, query_value))
+        if not any(key.lower() == "sslmode" for key, _ in filtered_pairs):
+            filtered_pairs.append(("sslmode", "require"))
+        value = urlunsplit(
+            (
+                split_value.scheme,
+                split_value.netloc,
+                split_value.path,
+                urlencode(filtered_pairs),
+                split_value.fragment,
+            )
+        )
     return value
 
 

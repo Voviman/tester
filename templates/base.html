@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title or "Testing Platform" }}</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <header class="topbar">
+        <div class="topbar-inner">
+            <a class="brand" href="/dashboard">Testing Platform</a>
+            <nav class="nav-actions">
+                {% if me %}
+                    <span class="user-chip">{{ me.username }} ({{ me.role }})</span>
+                    <a href="/dashboard">Dashboard</a>
+                    {% if me.role in ["admin", "super_admin"] %}
+                        <a href="/admin">Admin</a>
+                    {% endif %}
+                    <form action="/logout" method="post">
+                        <button type="submit" class="btn btn-muted">Logout</button>
+                    </form>
+                {% else %}
+                    <a href="/login">Login</a>
+                {% endif %}
+            </nav>
+        </div>
+    </header>
+    <main class="page">
+        {% if message %}
+            <div class="alert success">{{ message }}</div>
+        {% endif %}
+        {% if error %}
+            <div class="alert error">{{ error }}</div>
+        {% endif %}
+        {% block content %}{% endblock %}
+    </main>
+</body>
+</html>

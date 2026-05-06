@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="grid two">
+    <article class="card">
+        <h2>Profile</h2>
+        <div class="stats">
+            <div><span>Credits</span><strong>{{ profile.user.credits }}</strong></div>
+            <div><span>Tests done</span><strong>{{ profile.tests_done }}</strong></div>
+            <div><span>Passed</span><strong>{{ profile.passed_tests }}</strong></div>
+            <div><span>Failed</span><strong>{{ profile.failed_tests }}</strong></div>
+            <div><span>Success rate</span><strong>{{ "%.2f"|format(profile.success_rate_percent) }}%</strong></div>
+        </div>
+    </article>
+    <article class="card">
+        <h2>How testing works</h2>
+        <ul>
+            <li>1 credit = 1 test try</li>
+            <li>Timer and pass percentage are configured by admin</li>
+            <li>On successful pass, email notification is sent</li>
+        </ul>
+    </article>
+</section>
+
+<section class="card">
+    <h2>Available tests</h2>
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Topic</th>
+                <th>Level</th>
+                <th>Duration</th>
+                <th>Pass %</th>
+                <th>Questions</th>
+                <th>Action</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in catalog %}
+                <tr>
+                    <td>{{ item.topic_name }}</td>
+                    <td>{{ item.level_name }}</td>
+                    <td>{{ (item.duration_seconds // 60) }} min</td>
+                    <td>{{ "%.2f"|format(item.passing_percent) }}%</td>
+                    <td>{{ item.question_count }}</td>
+                    <td><a class="btn btn-small" href="/tests/{{ item.id }}">Start</a></td>
+                </tr>
+            {% else %}
+                <tr>
+                    <td colspan="6">No active tests available yet.</td>
+                </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</section>
+{% endblock %}

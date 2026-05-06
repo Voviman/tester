@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+    <h1>Test Session</h1>
+    <div class="test-meta">
+        <span>Attempt: #{{ attempt.attempt_id }}</span>
+        <span>Pass threshold: {{ "%.2f"|format(attempt.passing_percent) }}%</span>
+        <span class="timer" id="timer">Time left: --:--</span>
+    </div>
+
+    <form action="/tests/{{ attempt.attempt_id }}/submit" method="post" id="test-form">
+        {% for question in attempt.questions %}
+            <fieldset class="question-card">
+                <legend>Q{{ loop.index }}. {{ question.question_text }}</legend>
+                {% for option in question.options %}
+                    <label class="option">
+                        <input type="radio" name="answer_{{ question.id }}" value="{{ loop.index0 }}">
+                        <span>{{ option }}</span>
+                    </label>
+                {% endfor %}
+            </fieldset>
+        {% endfor %}
+        <button type="submit" class="btn">Submit Test</button>
+    </form>
+</section>
+
+<script>
+    (function () {
+        let remaining = {{ attempt.duration_seconds }};
+        const timerEl = document.getElementById("timer");
+        const formEl = document.getElementById("test-form");
+        function tick() {
+            const minutes = Math.floor(Math.max(remaining, 0) / 60);
+            const seconds = Math.max(remaining, 0) % 60;
+            timerEl.textContent = `Time left: ${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+            if (remaining <= 0) {
+                formEl.submit();
+                return;
+            }
+            remaining -= 1;
+            setTimeout(tick, 1000);
+        }
+        tick();
+    })();
+</script>
+{% endblock %}

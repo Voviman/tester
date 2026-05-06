@@ -6,3 +6,5 @@ email-validator
 PyJWT
 python-multipart
 psycopg[binary]
+requests
+jinja2

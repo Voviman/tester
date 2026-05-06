@@ -98,3 +98,30 @@ uvicorn platform_api:app --host 0.0.0.0 --port 8000 --reload
 5. Admin configures tests:
    - `POST /admin/test-configs`
    - `POST /admin/questions`
+
+## New UI Applications
+
+This repository now includes both updated client UIs connected to the same backend API:
+
+- `web_platform.py` -> website UI (user dashboard + admin tools)
+- `desktop_client.py` -> updated desktop app UI (shared login, credits, tests, profile stats, admin tools)
+
+### Run website UI
+
+```powershell
+# Optional: point UI to your deployed backend
+$env:PLATFORM_API_URL="https://your-api-domain"
+
+uvicorn web_platform:app --host 0.0.0.0 --port 8080 --reload
+```
+
+Open: `http://localhost:8080`
+
+### Run updated desktop UI
+
+```powershell
+# Optional: point desktop to your deployed backend
+$env:PLATFORM_API_URL="https://your-api-domain"
+
+python desktop_client.py
+```

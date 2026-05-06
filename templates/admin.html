@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="grid two">
+    <article class="card">
+        <h2>Create user</h2>
+        <form class="form-grid" method="post" action="/admin/users">
+            <label>Username</label>
+            <input name="username" required>
+            <label>Email</label>
+            <input type="email" name="email" required>
+            <label>Password</label>
+            <input type="password" name="password" required>
+            <label>Role</label>
+            <select name="role">
+                <option value="user">user</option>
+                {% if can_add_admin %}
+                    <option value="admin">admin</option>
+                {% endif %}
+            </select>
+            <label>Starting credits</label>
+            <input type="number" name="credits" min="0" value="0">
+            <button class="btn" type="submit">Create User</button>
+        </form>
+    </article>
+
+    <article class="card">
+        <h2>Add credits</h2>
+        <form class="form-grid" method="post" action="/admin/credits">
+            <label>User ID</label>
+            <input type="number" name="user_id" required>
+            <label>Credits to add</label>
+            <input type="number" name="credits_to_add" min="1" value="1" required>
+            <button class="btn" type="submit">Add Credits</button>
+        </form>
+    </article>
+</section>
+
+<section class="grid two">
+    <article class="card">
+        <h2>Test config</h2>
+        <form class="form-grid" method="post" action="/admin/test-configs">
+            <label>Topic name</label>
+            <input name="topic_name" required>
+            <label>Level name</label>
+            <input name="level_name" required>
+            <label>Duration (minutes)</label>
+            <input type="number" name="duration_minutes" min="1" value="15" required>
+            <label>Passing percent</label>
+            <input type="number" name="passing_percent" min="1" max="100" step="0.01" value="60" required>
+            <button class="btn" type="submit">Save Config</button>
+        </form>
+    </article>
+    <article class="card">
+        <h2>Add question</h2>
+        <form class="form-grid" method="post" action="/admin/questions">
+            <label>Test config ID</label>
+            <input type="number" name="test_config_id" required>
+            <label>Question text</label>
+            <textarea name="question_text" rows="3" required></textarea>
+            <label>Option 1</label>
+            <input name="option_1" required>
+            <label>Option 2</label>
+            <input name="option_2" required>
+            <label>Option 3</label>
+            <input name="option_3" required>
+            <label>Option 4</label>
+            <input name="option_4" required>
+            <label>Correct option index (0-3)</label>
+            <input type="number" name="correct_index" min="0" max="3" value="0" required>
+            <button class="btn" type="submit">Add Question</button>
+        </form>
+    </article>
+</section>
+
+<section class="card">
+    <h2>Users</h2>
+    <table class="table">
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Username</th>
+                <th>Email</th>
+                <th>Role</th>
+                <th>Credits</th>
+                <th>Active</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for user in users %}
+                <tr>
+                    <td>{{ user.id }}</td>
+                    <td>{{ user.username }}</td>
+                    <td>{{ user.email }}</td>
+                    <td>{{ user.role }}</td>
+                    <td>{{ user.credits }}</td>
+                    <td>{{ user.is_active }}</td>
+                </tr>
+            {% else %}
+                <tr><td colspan="6">No users.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</section>
+
+<section class="card">
+    <h2>Test configs</h2>
+    <table class="table">
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Topic</th>
+                <th>Level</th>
+                <th>Duration</th>
+                <th>Pass %</th>
+                <th>Questions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in test_configs %}
+                <tr>
+                    <td>{{ item.id }}</td>
+                    <td>{{ item.topic_name }}</td>
+                    <td>{{ item.level_name }}</td>
+                    <td>{{ item.duration_seconds // 60 }} min</td>
+                    <td>{{ "%.2f"|format(item.passing_percent) }}%</td>
+                    <td>{{ item.question_count }}</td>
+                </tr>
+            {% else %}
+                <tr><td colspan="6">No test configs.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</section>
+{% endblock %}
