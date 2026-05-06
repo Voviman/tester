@@ -73,6 +73,10 @@ pip install -r platform_requirements.txt
 - `JWT_SECRET`
 - `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_SENDER`
 
+For PostgreSQL on Render/Supabase, use a URL like:
+
+- `postgresql+psycopg://USER:PASSWORD@HOST:5432/DBNAME?sslmode=require`
+
 3. Start API server:
 
 ```powershell

@@ -16,7 +16,18 @@ from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Te
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./platform_backend.db")
+def normalize_database_url(url: str) -> str:
+    value = (url or "").strip()
+    if not value:
+        return "sqlite:///./platform_backend.db"
+    if value.startswith("postgres://"):
+        value = value.replace("postgres://", "postgresql://", 1)
+    if value.startswith("postgresql://"):
+        value = value.replace("postgresql://", "postgresql+psycopg://", 1)
+    return value
+
+
+DATABASE_URL = normalize_database_url(os.getenv("DATABASE_URL", "sqlite:///./platform_backend.db"))
 JWT_SECRET = os.getenv("JWT_SECRET", "change-this-secret-in-production")
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "720"))
