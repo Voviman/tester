@@ -125,10 +125,21 @@ def dashboard(request: Request, message: str = "", error: str = ""):
     try:
         me = api_request(token, "GET", "/auth/me")
         profile = api_request(token, "GET", "/profile/me")
+    except ValueError as api_error:
+        return redirect_to_login(str(api_error))
+
+    # Keep users logged in even if backend is temporarily outdated or mid-deploy.
+    social_dashboard_data = {"tests": [], "active_users": [], "recent_results": [], "following_user_ids": []}
+    comments = []
+    try:
         social_dashboard_data = api_request(token, "GET", "/social/dashboard")
         comments = api_request(token, "GET", "/social/comments")
     except ValueError as api_error:
-        return redirect_to_login(str(api_error))
+        error = (
+            error
+            or f"Community data is temporarily unavailable ({api_error}). "
+            "Please redeploy backend API with latest version."
+        )
 
     comments_by_test: dict[int, list[dict[str, Any]]] = {}
     for item in comments:
@@ -147,6 +158,46 @@ def dashboard(request: Request, message: str = "", error: str = ""):
             "error": error,
             "is_admin": me["role"] in {"admin", "super_admin"},
             "active_page": "dashboard",
+        },
+    )
+
+
+@app.get("/profile", response_class=HTMLResponse)
+def profile_page(request: Request, message: str = "", error: str = ""):
+    token = get_token(request)
+    if not token:
+        return redirect_to_login("Please log in first.")
+
+    try:
+        me = api_request(token, "GET", "/auth/me")
+        profile = api_request(token, "GET", "/profile/me")
+    except ValueError as api_error:
+        return redirect_to_login(str(api_error))
+
+    social_dashboard_data = {"tests": [], "active_users": [], "recent_results": [], "following_user_ids": []}
+    try:
+        social_dashboard_data = api_request(token, "GET", "/social/dashboard")
+    except ValueError as api_error:
+        error = (
+            error
+            or f"Recent activity is temporarily unavailable ({api_error}). "
+            "Please redeploy backend API with latest version."
+        )
+
+    my_results = [
+        item for item in social_dashboard_data.get("recent_results", []) if int(item.get("user_id", 0)) == int(me["id"])
+    ]
+
+    return templates.TemplateResponse(
+        request=request,
+        name="profile.html",
+        context={
+            "me": me,
+            "profile": profile,
+            "my_results": my_results,
+            "message": message,
+            "error": error,
+            "active_page": "profile",
         },
     )
 

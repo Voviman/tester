@@ -71,13 +71,13 @@
 
     <aside>
         <article class="card">
-            <h3>Your Profile</h3>
-            <div class="stats">
-                <div><span>Credits</span><strong>{{ profile.user.credits }}</strong></div>
-                <div><span>Tests done</span><strong>{{ profile.tests_done }}</strong></div>
-                <div><span>Passed</span><strong>{{ profile.passed_tests }}</strong></div>
-                <div><span>Failed</span><strong>{{ profile.failed_tests }}</strong></div>
-                <div><span>Success rate</span><strong>{{ "%.2f"|format(profile.success_rate_percent) }}%</strong></div>
+            <h3>Your Panel</h3>
+            <div class="user-panel">
+                <div class="small muted">Use desktop app to take tests</div>
+                <div class="user-panel-row"><span>Credits</span><strong>{{ profile.user.credits }}</strong></div>
+                <div class="user-panel-row"><span>Tests done</span><strong>{{ profile.tests_done }}</strong></div>
+                <div class="user-panel-row"><span>Success</span><strong>{{ "%.2f"|format(profile.success_rate_percent) }}%</strong></div>
+                <a class="btn btn-small" href="/profile">Open Full Profile</a>
             </div>
         </article>
 

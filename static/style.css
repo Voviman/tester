@@ -18,7 +18,7 @@ body {
 .topbar-inner {
     max-width: 1200px;
     margin: 0 auto;
-    padding: 14px 18px;
+    padding: 14px 22px;
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -59,7 +59,7 @@ body {
 .page {
     max-width: 1200px;
     margin: 20px auto;
-    padding: 0 18px 24px;
+    padding: 0 22px 28px;
 }
 
 .subnav-wrap {
@@ -95,8 +95,9 @@ body {
     background: #fff;
     border: 1px solid #dbe5f3;
     border-radius: 12px;
-    padding: 16px;
+    padding: 20px;
     margin-bottom: 16px;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
 }
 
 .card.narrow {
@@ -111,7 +112,7 @@ body {
 .dashboard-layout {
     display: grid;
     grid-template-columns: 2fr 1fr;
-    gap: 16px;
+    gap: 20px;
     align-items: start;
 }
 
@@ -313,7 +314,7 @@ input, select, textarea {
 .test-social-card {
     border: 1px solid #dbe5f3;
     border-radius: 10px;
-    padding: 12px;
+    padding: 14px;
     margin-bottom: 12px;
     background: #fbfdff;
 }
@@ -330,7 +331,7 @@ input, select, textarea {
 }
 
 .comment-item {
-    padding: 8px 10px;
+    padding: 12px 12px;
     border: 1px solid #e2e8f0;
     border-radius: 8px;
     margin-bottom: 8px;
@@ -349,7 +350,7 @@ input, select, textarea {
 .feed-item {
     border: 1px solid #e2e8f0;
     border-radius: 8px;
-    padding: 8px 10px;
+    padding: 12px 12px;
     background: #fff;
 }
 
@@ -361,11 +362,45 @@ input, select, textarea {
 .user-item {
     border: 1px solid #e2e8f0;
     border-radius: 8px;
-    padding: 8px;
+    padding: 12px;
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: space-between;
     gap: 10px;
+}
+
+.user-panel {
+    display: grid;
+    gap: 10px;
+}
+
+.user-panel-row {
+    background: #f6f9ff;
+    border: 1px solid #e1e9f7;
+    border-radius: 8px;
+    padding: 10px 12px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.profile-list {
+    display: grid;
+    gap: 8px;
+}
+
+.profile-list div {
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    padding: 10px 12px;
+}
+
+.profile-list span {
+    display: block;
+    font-size: 12px;
+    color: #64748b;
+    margin-bottom: 4px;
 }
 
 .text-success {

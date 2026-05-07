@@ -12,8 +12,9 @@
             <a class="brand" href="/dashboard">Testing Platform</a>
             <nav class="nav-actions">
                 {% if me %}
-                    <span class="user-chip">{{ me.username }} ({{ me.role }})</span>
+                    <span class="user-chip">{{ me.username }}</span>
                     <a class="{% if active_page == 'dashboard' %}active-link{% endif %}" href="/dashboard">Dashboard</a>
+                    <a class="{% if active_page == 'profile' %}active-link{% endif %}" href="/profile">Profile</a>
                     {% if me.role in ["admin", "super_admin"] %}
                         <a class="{% if active_page == 'admin' %}active-link{% endif %}" href="/admin">Admin</a>
                     {% endif %}

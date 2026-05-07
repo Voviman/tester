@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+    <h2>My Profile</h2>
+    <p class="muted">Personal statistics and your recent public test results.</p>
+</section>
+
+<section class="grid two">
+    <article class="card">
+        <h3>Performance Overview</h3>
+        <div class="stats">
+            <div><span>Credits</span><strong>{{ profile.user.credits }}</strong></div>
+            <div><span>Tests done</span><strong>{{ profile.tests_done }}</strong></div>
+            <div><span>Passed</span><strong>{{ profile.passed_tests }}</strong></div>
+            <div><span>Failed</span><strong>{{ profile.failed_tests }}</strong></div>
+            <div><span>Success rate</span><strong>{{ "%.2f"|format(profile.success_rate_percent) }}%</strong></div>
+        </div>
+    </article>
+    <article class="card">
+        <h3>Account</h3>
+        <div class="profile-list">
+            <div><span>Username</span><strong>{{ profile.user.username }}</strong></div>
+            <div><span>Email</span><strong>{{ profile.user.email }}</strong></div>
+            <div><span>Status</span><strong>{% if profile.user.is_active %}Active{% else %}Inactive{% endif %}</strong></div>
+            <div><span>Testing Access</span><strong>Desktop application only</strong></div>
+        </div>
+    </article>
+</section>
+
+<section class="card">
+    <h3>My Recent Test Results</h3>
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Topic</th>
+                <th>Level</th>
+                <th>Score</th>
+                <th>Success %</th>
+                <th>Status</th>
+                <th>Date</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for result in my_results %}
+                <tr>
+                    <td>{{ result.topic_name }}</td>
+                    <td>{{ result.level_name }}</td>
+                    <td>{{ result.score }}/{{ result.total_questions }}</td>
+                    <td>{{ "%.2f"|format(result.success_percent) }}%</td>
+                    <td>{% if result.passed %}<span class="text-success">Passed</span>{% else %}<span class="text-danger">Failed</span>{% endif %}</td>
+                    <td>{{ result.ended_at or "-" }}</td>
+                </tr>
+            {% else %}
+                <tr><td colspan="6">No recent results yet.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</section>
+{% endblock %}
