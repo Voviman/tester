@@ -5,8 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Testing Platform</title>
     <link rel="stylesheet" href="/static/vue-style.css">
+    <script>window.PLATFORM_API_URL = {{ api_base_url|tojson }};</script>
 </head>
 <body>
+    {% raw %}
     <div id="app" class="site-shell">
         <header class="app-header" v-if="authenticated">
             <div class="app-header-inner">
@@ -265,8 +267,8 @@
             </section>
         </main>
     </div>
+    {% endraw %}
 
-    <script>window.PLATFORM_API_URL = "{{ api_base_url }}";</script>
     <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
     <script src="/static/vue-app.js"></script>
 </body>
