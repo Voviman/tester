@@ -13,7 +13,7 @@ import jwt
 from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel, EmailStr, Field
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, create_engine, func, select
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, create_engine, delete, func, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 
 
@@ -188,14 +188,56 @@ def create_access_token(user: User) -> str:
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 
-def parse_options(options_json: str) -> list[str]:
+def parse_question_payload(options_json: str, fallback_correct_index: int | None = None) -> tuple[list[str], list[int]]:
     try:
         value = json.loads(options_json)
     except json.JSONDecodeError as error:
         raise HTTPException(status_code=500, detail="Invalid options data in database.") from error
-    if not isinstance(value, list):
+    options: list[str]
+    correct_indices: list[int]
+    if isinstance(value, list):
+        options = [str(item) for item in value]
+        fallback = 0 if fallback_correct_index is None else int(fallback_correct_index)
+        correct_indices = [fallback]
+    elif isinstance(value, dict):
+        raw_options = value.get("options")
+        raw_correct_indices = value.get("correct_indices", [])
+        if not isinstance(raw_options, list):
+            raise HTTPException(status_code=500, detail="Invalid options format in database.")
+        if not isinstance(raw_correct_indices, list):
+            raise HTTPException(status_code=500, detail="Invalid correct answer format in database.")
+        options = [str(item) for item in raw_options]
+        correct_indices = []
+        for item in raw_correct_indices:
+            try:
+                index_value = int(item)
+            except (TypeError, ValueError):
+                continue
+            if index_value >= 0:
+                correct_indices.append(index_value)
+        if not correct_indices:
+            fallback = 0 if fallback_correct_index is None else int(fallback_correct_index)
+            correct_indices = [fallback]
+        correct_indices = sorted(set(correct_indices))
+    else:
         raise HTTPException(status_code=500, detail="Invalid options format in database.")
-    return [str(item) for item in value]
+
+    if not options:
+        raise HTTPException(status_code=500, detail="Question options are empty in database.")
+    valid_indices = [index for index in correct_indices if index < len(options)]
+    if not valid_indices:
+        valid_indices = [0]
+    return options, valid_indices
+
+
+def build_question_payload(options: list[str], correct_indices: list[int]) -> str:
+    unique_indices = sorted(set(int(item) for item in correct_indices if int(item) >= 0))
+    return json.dumps({"options": options, "correct_indices": unique_indices})
+
+
+def parse_options(options_json: str, fallback_correct_index: int | None = None) -> list[str]:
+    options, _ = parse_question_payload(options_json, fallback_correct_index)
+    return options
 
 
 def send_pass_notification_email(to_email: str, username: str, topic_name: str, level_name: str, score_text: str):
@@ -278,8 +320,8 @@ class TestConfigOut(BaseModel):
 class QuestionCreateIn(BaseModel):
     test_config_id: int
     question_text: str = Field(min_length=5)
-    options: list[str] = Field(min_length=4, max_length=4)
-    correct_index: int = Field(ge=0, le=3)
+    options: list[str] = Field(min_length=2, max_length=10)
+    correct_indices: list[int] = Field(min_length=1)
 
 
 class QuestionPublicOut(BaseModel):
@@ -291,6 +333,7 @@ class QuestionPublicOut(BaseModel):
 class QuestionAdminOut(QuestionPublicOut):
     test_config_id: int
     correct_index: int
+    correct_indices: list[int]
 
 
 class TestStartOut(BaseModel):
@@ -302,7 +345,7 @@ class TestStartOut(BaseModel):
 
 
 class SubmitAttemptIn(BaseModel):
-    answers: dict[int, int]
+    answers: dict[int, int | list[int]]
 
 
 class SubmitAttemptOut(BaseModel):
@@ -362,8 +405,8 @@ class TestConfigUpdateIn(BaseModel):
 
 class QuestionUpdateIn(BaseModel):
     question_text: str | None = Field(default=None, min_length=5)
-    options: list[str] | None = Field(default=None, min_length=4, max_length=4)
-    correct_index: int | None = Field(default=None, ge=0, le=3)
+    options: list[str] | None = Field(default=None, min_length=2, max_length=10)
+    correct_indices: list[int] | None = None
 
 
 class SocialCommentCreateIn(BaseModel):
@@ -419,12 +462,14 @@ def serialize_user(user: User) -> UserOut:
 
 
 def serialize_question_admin(question: Question) -> QuestionAdminOut:
+    options, correct_indices = parse_question_payload(question.options_json, question.correct_index)
     return QuestionAdminOut(
         id=question.id,
         test_config_id=question.test_config_id,
         question_text=question.question_text,
-        options=parse_options(question.options_json),
+        options=options,
         correct_index=question.correct_index,
+        correct_indices=correct_indices,
     )
 
 
@@ -835,6 +880,36 @@ def admin_add_user_credits(
     return serialize_user(user)
 
 
+@app.delete("/admin/users/{user_id}")
+def admin_delete_user(
+    user_id: int,
+    current_user: Annotated[User, Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))],
+    db: Annotated[Session, Depends(get_db)],
+):
+    user = db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found.")
+    if user.id == current_user.id:
+        raise HTTPException(status_code=400, detail="You cannot delete your own account.")
+    if not can_manage_target_user(current_user, user):
+        raise HTTPException(status_code=403, detail="You do not have permission to delete this user.")
+
+    created_users = db.scalars(select(User).where(User.created_by_id == user.id)).all()
+    for created_user in created_users:
+        created_user.created_by_id = None
+
+    db.execute(
+        delete(UserFollow).where(
+            (UserFollow.follower_id == user.id) | (UserFollow.following_id == user.id),
+        )
+    )
+    db.execute(delete(TestComment).where(TestComment.user_id == user.id))
+    db.execute(delete(Attempt).where(Attempt.user_id == user.id))
+    db.delete(user)
+    db.commit()
+    return {"deleted": True}
+
+
 @app.post("/admin/test-configs", response_model=TestConfigOut)
 def admin_upsert_test_config(
     payload: TestConfigCreateIn,
@@ -942,6 +1017,29 @@ def admin_update_test_config(
     )
 
 
+@app.delete("/admin/test-configs/{test_config_id}")
+def admin_delete_test_config(
+    test_config_id: int,
+    _: Annotated[User, Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))],
+    db: Annotated[Session, Depends(get_db)],
+):
+    config = db.get(TestConfig, test_config_id)
+    if config is None:
+        raise HTTPException(status_code=404, detail="Test config not found.")
+
+    attempt_count = db.scalar(select(func.count(Attempt.id)).where(Attempt.test_config_id == test_config_id)) or 0
+    if int(attempt_count) > 0:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot delete a test config that already has attempts.",
+        )
+
+    db.execute(delete(TestComment).where(TestComment.test_config_id == test_config_id))
+    db.delete(config)
+    db.commit()
+    return {"deleted": True}
+
+
 @app.post("/admin/questions", response_model=QuestionPublicOut)
 def admin_add_question(
     payload: QuestionCreateIn,
@@ -956,12 +1054,17 @@ def admin_add_question(
         raise HTTPException(status_code=400, detail="All options are required.")
     if len(set(item.lower() for item in cleaned_options)) != len(cleaned_options):
         raise HTTPException(status_code=400, detail="Question options must be unique.")
+    clean_correct_indices = sorted({int(item) for item in payload.correct_indices if int(item) >= 0})
+    if not clean_correct_indices:
+        raise HTTPException(status_code=400, detail="At least one correct answer must be selected.")
+    if any(item >= len(cleaned_options) for item in clean_correct_indices):
+        raise HTTPException(status_code=400, detail="Correct answer index is out of bounds.")
 
     question = Question(
         test_config_id=payload.test_config_id,
         question_text=payload.question_text.strip(),
-        options_json=json.dumps(cleaned_options),
-        correct_index=payload.correct_index,
+        options_json=build_question_payload(cleaned_options, clean_correct_indices),
+        correct_index=clean_correct_indices[0],
     )
     db.add(question)
     db.commit()
@@ -996,7 +1099,7 @@ def admin_update_question(
     if payload.question_text is not None:
         question.question_text = payload.question_text.strip()
 
-    options = parse_options(question.options_json)
+    options, correct_indices = parse_question_payload(question.options_json, question.correct_index)
     if payload.options is not None:
         cleaned_options = [item.strip() for item in payload.options]
         if any(not item for item in cleaned_options):
@@ -1004,12 +1107,20 @@ def admin_update_question(
         if len(set(item.lower() for item in cleaned_options)) != len(cleaned_options):
             raise HTTPException(status_code=400, detail="Question options must be unique.")
         options = cleaned_options
-        question.options_json = json.dumps(cleaned_options)
+        correct_indices = [item for item in correct_indices if item < len(options)]
 
-    if payload.correct_index is not None:
-        question.correct_index = payload.correct_index
-    elif question.correct_index >= len(options):
-        raise HTTPException(status_code=400, detail="Correct index is out of bounds for provided options.")
+    if payload.correct_indices is not None:
+        candidate_indices = sorted({int(item) for item in payload.correct_indices if int(item) >= 0})
+        if not candidate_indices:
+            raise HTTPException(status_code=400, detail="At least one correct answer must be selected.")
+        if any(item >= len(options) for item in candidate_indices):
+            raise HTTPException(status_code=400, detail="Correct answer index is out of bounds for provided options.")
+        correct_indices = candidate_indices
+    elif not correct_indices:
+        raise HTTPException(status_code=400, detail="At least one correct answer must be selected.")
+
+    question.correct_index = correct_indices[0]
+    question.options_json = build_question_payload(options, correct_indices)
 
     db.commit()
     db.refresh(question)
@@ -1120,8 +1231,15 @@ def user_submit_test(
     answer_map = payload.answers
 
     for question in questions:
-        selected_index = answer_map.get(question.id, -1)
-        if selected_index == question.correct_index:
+        _, correct_indices = parse_question_payload(question.options_json, question.correct_index)
+        selected_raw = answer_map.get(question.id, -1)
+        if isinstance(selected_raw, list):
+            selected_indices = sorted({int(item) for item in selected_raw if isinstance(item, int) and item >= 0})
+        elif isinstance(selected_raw, int) and selected_raw >= 0:
+            selected_indices = [selected_raw]
+        else:
+            selected_indices = []
+        if selected_indices == correct_indices:
             score += 1
 
     success_percent = (score / total_questions) * 100

@@ -9,7 +9,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
 
-API_BASE_URL = os.getenv("PLATFORM_API_URL", "http://localhost:8000").rstrip("/")
+API_BASE_URL = os.getenv("PLATFORM_API_URL", "https://tester-pykb.onrender.com").rstrip("/")
 COOKIE_NAME = "platform_token"
 
 app = FastAPI(title="Testing Platform Web UI (Vue)", version="2.0.0")
@@ -51,11 +51,25 @@ class ConfigUpdateIn(BaseModel):
     is_active: bool = True
 
 
+class ConfigCreateIn(BaseModel):
+    topic_name: str
+    level_name: str
+    duration_minutes: int = Field(ge=1)
+    passing_percent: float = Field(gt=0, le=100)
+    is_active: bool = True
+
+
 class QuestionCreateIn(BaseModel):
     test_config_id: int
     question_text: str = Field(min_length=5)
-    options: list[str] = Field(min_length=4, max_length=4)
-    correct_index: int = Field(ge=0, le=3)
+    options: list[str] = Field(min_length=2, max_length=10)
+    correct_indices: list[int] = Field(min_length=1)
+
+
+class QuestionUpdateIn(BaseModel):
+    question_text: str = Field(min_length=5)
+    options: list[str] = Field(min_length=2, max_length=10)
+    correct_indices: list[int] = Field(min_length=1)
 
 
 class TestBuilderIn(BaseModel):
@@ -64,8 +78,8 @@ class TestBuilderIn(BaseModel):
     duration_minutes: int = Field(ge=1)
     passing_percent: float = Field(gt=0, le=100)
     question_text: str = Field(min_length=5)
-    options: list[str] = Field(min_length=4, max_length=4)
-    correct_index: int = Field(ge=0, le=3)
+    options: list[str] = Field(min_length=2, max_length=10)
+    correct_index: int = Field(ge=0)
 
 
 def get_token(request: Request) -> str | None:
@@ -292,6 +306,29 @@ def webapi_admin_add_credits(request: Request, user_id: int, payload: CreditsIn)
     return api_request(token, "PATCH", f"/admin/users/{user_id}/credits", json=payload.model_dump())
 
 
+@app.delete("/webapi/admin/users/{user_id}")
+def webapi_admin_delete_user(request: Request, user_id: int):
+    token, _ = require_admin(request)
+    return api_request(token, "DELETE", f"/admin/users/{user_id}")
+
+
+@app.post("/webapi/admin/test-configs")
+def webapi_admin_create_config(request: Request, payload: ConfigCreateIn):
+    token, _ = require_admin(request)
+    return api_request(
+        token,
+        "POST",
+        "/admin/test-configs",
+        json={
+            "topic_name": payload.topic_name.strip(),
+            "level_name": payload.level_name.strip(),
+            "duration_seconds": payload.duration_minutes * 60,
+            "passing_percent": payload.passing_percent,
+            "is_active": payload.is_active,
+        },
+    )
+
+
 @app.patch("/webapi/admin/test-configs/{test_config_id}")
 def webapi_admin_update_config(request: Request, test_config_id: int, payload: ConfigUpdateIn):
     token, _ = require_admin(request)
@@ -309,10 +346,17 @@ def webapi_admin_update_config(request: Request, test_config_id: int, payload: C
     )
 
 
+@app.delete("/webapi/admin/test-configs/{test_config_id}")
+def webapi_admin_delete_config(request: Request, test_config_id: int):
+    token, _ = require_admin(request)
+    return api_request(token, "DELETE", f"/admin/test-configs/{test_config_id}")
+
+
 @app.post("/webapi/admin/questions")
 def webapi_admin_create_question(request: Request, payload: QuestionCreateIn):
     token, _ = require_admin(request)
     clean_options = [item.strip() for item in payload.options]
+    clean_correct_indices = sorted({int(item) for item in payload.correct_indices})
     return api_request(
         token,
         "POST",
@@ -321,9 +365,32 @@ def webapi_admin_create_question(request: Request, payload: QuestionCreateIn):
             "test_config_id": payload.test_config_id,
             "question_text": payload.question_text.strip(),
             "options": clean_options,
-            "correct_index": payload.correct_index,
+            "correct_indices": clean_correct_indices,
         },
     )
+
+
+@app.patch("/webapi/admin/questions/{question_id}")
+def webapi_admin_update_question(request: Request, question_id: int, payload: QuestionUpdateIn):
+    token, _ = require_admin(request)
+    clean_options = [item.strip() for item in payload.options]
+    clean_correct_indices = sorted({int(item) for item in payload.correct_indices})
+    return api_request(
+        token,
+        "PATCH",
+        f"/admin/questions/{question_id}",
+        json={
+            "question_text": payload.question_text.strip(),
+            "options": clean_options,
+            "correct_indices": clean_correct_indices,
+        },
+    )
+
+
+@app.delete("/webapi/admin/questions/{question_id}")
+def webapi_admin_delete_question(request: Request, question_id: int):
+    token, _ = require_admin(request)
+    return api_request(token, "DELETE", f"/admin/questions/{question_id}")
 
 
 @app.post("/webapi/admin/test-builder")
@@ -363,7 +430,7 @@ def webapi_admin_test_builder(request: Request, payload: TestBuilderIn):
             "test_config_id": int(match["id"]),
             "question_text": payload.question_text.strip(),
             "options": clean_options,
-            "correct_index": payload.correct_index,
+            "correct_indices": [payload.correct_index],
         },
     )
     return {"ok": True, "config": match, "question": question}

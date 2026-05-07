@@ -2,10 +2,6 @@
 {% block content %}
 <section class="card">
     <h2>Community Dashboard</h2>
-    <p class="muted">
-        Tests are available only in the desktop application. This web page is for overview, social interaction,
-        and community progress.
-    </p>
 </section>
 
 <section class="dashboard-layout">
@@ -22,7 +18,6 @@
                                 Questions: {{ item.question_count }}
                             </div>
                         </div>
-                        <span class="badge desktop-only">Desktop only</span>
                     </div>
                     <form class="form-grid" method="post" action="/community/tests/{{ item.id }}/comments">
                         <label>Add comment for this test</label>
@@ -73,7 +68,6 @@
         <article class="card">
             <h3>Your Panel</h3>
             <div class="user-panel">
-                <div class="small muted">Use desktop app to take tests</div>
                 <div class="user-panel-row"><span>Credits</span><strong>{{ profile.user.credits }}</strong></div>
                 <div class="user-panel-row"><span>Tests done</span><strong>{{ profile.tests_done }}</strong></div>
                 <div class="user-panel-row"><span>Success</span><strong>{{ "%.2f"|format(profile.success_rate_percent) }}%</strong></div>

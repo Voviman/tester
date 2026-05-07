@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Testing Platform</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
     <link rel="stylesheet" href="/static/vue-style.css">
     <script>window.PLATFORM_API_URL = {{ api_base_url|tojson }};</script>
 </head>
@@ -15,7 +16,15 @@
                 <div class="brand">Testing Platform</div>
                 <nav class="app-nav">
                     <button class="nav-btn" :class="{active: view==='dashboard'}" @click="setView('dashboard')">Dashboard</button>
-                    <button class="nav-btn" :class="{active: view==='profile'}" @click="setView('profile')">Profile</button>
+                    <button
+                        class="nav-btn nav-icon-btn"
+                        :class="{active: view==='profile'}"
+                        @click="setView('profile')"
+                        aria-label="Profile"
+                        title="Profile"
+                    >
+                        <i class="bi bi-person-circle icon" aria-hidden="true"></i>
+                    </button>
                     <button v-if="isAdmin" class="nav-btn" :class="{active: view==='admin'}" @click="setView('admin')">Admin</button>
                 </nav>
                 <div class="header-right">
@@ -25,13 +34,12 @@
             </div>
         </header>
 
-        <main class="app-main">
+        <main :class="['app-main', { 'admin-main': view==='admin' && isAdmin }]">
             <div v-if="booting" class="state-card">Loading...</div>
 
             <section v-else-if="!authenticated" class="auth-wrap">
                 <div class="auth-card">
                     <h1>Sign in</h1>
-                    <p class="muted">Website is community dashboard only. Tests are taken from desktop app.</p>
                     <div v-if="error" class="alert error">{{ error }}</div>
                     <label>Username or Email</label>
                     <input v-model.trim="login.username" type="text" placeholder="Enter username or email">
@@ -47,68 +55,79 @@
 
                 <section v-if="view==='dashboard'" class="dashboard-grid">
                     <div class="main-col">
-                        <article class="panel">
+                        <article class="panel available-tests-panel">
                             <h2>Available Tests</h2>
-                            <p class="muted">Desktop application only. Discuss tests below.</p>
                             <div v-if="!dashboard.social_dashboard.tests.length" class="empty">No active tests found.</div>
                             <div
                                 v-for="test in dashboard.social_dashboard.tests"
                                 :key="test.id"
                                 class="test-card"
-                                :data-watermark="`${test.topic_name} ${test.level_name}`"
                             >
                                 <div class="test-top">
                                     <div>
-                                        <h3>{{ test.topic_name }} - {{ test.level_name }}</h3>
-                                        <div class="muted small">
-                                            {{ Math.floor(test.duration_seconds / 60) }} min |
-                                            Pass {{ Number(test.passing_percent).toFixed(2) }}% |
-                                            {{ test.question_count }} questions
+                                        <h3 class="test-title">{{ test.topic_name }} - {{ test.level_name }}</h3>
+                                        <div class="test-meta">
+                                            <span class="meta-chip meta-time">Time {{ Math.floor(test.duration_seconds / 60) }} min</span>
+                                            <span class="meta-chip meta-pass">Pass {{ Number(test.passing_percent).toFixed(2) }}%</span>
+                                            <span class="meta-chip meta-questions">
+                                                {{ test.question_count }} {{ test.question_count === 1 ? 'question' : 'questions' }}
+                                            </span>
                                         </div>
                                     </div>
-                                    <span class="desktop-badge">Desktop only</span>
                                 </div>
 
-                                <div class="comment-form">
-                                    <textarea
-                                        v-model="commentDrafts[test.id]"
-                                        rows="2"
-                                        placeholder="Share feedback or tips for this test..."
-                                    ></textarea>
-                                    <button class="btn primary small" @click="postComment(test.id)" :disabled="busy">Post comment</button>
-                                </div>
+                                <div class="comment-section">
+                                    <div class="comment-form">
+                                        <textarea
+                                            v-model="commentDrafts[test.id]"
+                                            rows="2"
+                                            placeholder="Share feedback or tips for this test..."
+                                        ></textarea>
+                                        <button
+                                            class="btn primary small comment-submit icon-btn"
+                                            @click="postComment(test.id)"
+                                            :disabled="busy"
+                                            aria-label="Post comment"
+                                            title="Post comment"
+                                        >
+                                            <i class="bi bi-send icon" aria-hidden="true"></i>
+                                        </button>
+                                    </div>
 
-                                <div class="comment-list">
-                                    <div
-                                        v-for="comment in (dashboard.comments_by_test[test.id] || [])"
-                                        :key="comment.id"
-                                        class="comment-item"
-                                    >
-                                        <div class="comment-meta">
-                                            <strong>{{ comment.username }}</strong>
-                                            <span>{{ formatDate(comment.created_at) }}</span>
+                                    <div class="comment-thread">
+                                        <div class="comment-list">
+                                            <div
+                                                v-for="comment in visibleComments(test.id)"
+                                                :key="comment.id"
+                                                :class="['comment-item', { mine: comment.username === me?.username }]"
+                                            >
+                                                <div class="avatar" :style="avatarStyle(comment.username)" aria-hidden="true">
+                                                    {{ userInitials(comment.username) }}
+                                                </div>
+                                                <div class="comment-content">
+                                                    <div class="comment-meta">
+                                                        <strong>{{ comment.username }}</strong>
+                                                        <span>{{ formatDate(comment.created_at) }}</span>
+                                                    </div>
+                                                    <p class="comment-bubble">{{ comment.content }}</p>
+                                                </div>
+                                            </div>
+                                            <div v-if="!(dashboard.comments_by_test[test.id] || []).length" class="empty small">
+                                                No comments yet.
+                                            </div>
                                         </div>
-                                        <p>{{ comment.content }}</p>
+                                        <div v-if="hasMoreComments(test.id)" class="comment-more-wrap">
+                                            <a
+                                                class="comment-more-text"
+                                                href="#"
+                                                @click.prevent="showMoreComments(test.id)"
+                                                aria-label="Show more comments"
+                                                title="Show more comments"
+                                            >
+                                                Show more
+                                            </a>
+                                        </div>
                                     </div>
-                                    <div v-if="!(dashboard.comments_by_test[test.id] || []).length" class="empty small">
-                                        No comments yet.
-                                    </div>
-                                </div>
-                            </div>
-                        </article>
-
-                        <article class="panel">
-                            <h2>Recent Results Feed</h2>
-                            <div v-if="!dashboard.social_dashboard.recent_results.length" class="empty">No results yet.</div>
-                            <div v-for="item in dashboard.social_dashboard.recent_results" :key="item.attempt_id" class="feed-row">
-                                <div>
-                                    <strong>{{ item.username }}</strong> completed
-                                    <strong>{{ item.topic_name }} - {{ item.level_name }}</strong>
-                                </div>
-                                <div class="muted small">
-                                    {{ item.score }}/{{ item.total_questions }} ({{ Number(item.success_percent).toFixed(2) }}%)
-                                    - <span :class="item.passed ? 'ok' : 'bad'">{{ item.passed ? 'Passed' : 'Failed' }}</span>
-                                    - {{ formatDate(item.ended_at) }}
                                 </div>
                             </div>
                         </article>
@@ -125,26 +144,72 @@
                         </article>
 
                         <article class="panel">
-                            <h2>Active Users</h2>
-                            <div v-if="!dashboard.social_dashboard.active_users.length" class="empty">No active users.</div>
-                            <div v-for="user in dashboard.social_dashboard.active_users" :key="user.id" class="user-row">
-                                <div>
-                                    <strong>{{ user.username }}</strong>
-                                    <div class="muted small">
-                                        Tests {{ user.tests_done }} | Success {{ Number(user.success_rate_percent).toFixed(2) }}%
+                            <h2>Recent Results Feed</h2>
+                            <div v-if="!dashboard.social_dashboard.recent_results.length" class="empty">No results yet.</div>
+                            <div v-else class="feed-scroll">
+                                <div v-for="item in dashboard.social_dashboard.recent_results" :key="item.attempt_id" class="feed-row">
+                                    <div class="feed-head">
+                                        <div class="avatar avatar-sm" :style="avatarStyle(item.username)" aria-hidden="true">
+                                            {{ userInitials(item.username) }}
+                                        </div>
+                                        <div>
+                                            <strong>{{ item.username }}</strong> completed
+                                            <strong>{{ item.topic_name }} - {{ item.level_name }}</strong>
+                                        </div>
+                                    </div>
+                                    <div class="muted small feed-meta">
+                                        {{ item.score }}/{{ item.total_questions }} ({{ Number(item.success_percent).toFixed(2) }}%)
+                                        - <span :class="item.passed ? 'ok' : 'bad'">{{ item.passed ? 'Passed' : 'Failed' }}</span>
+                                        - {{ formatDate(item.ended_at) }}
                                     </div>
                                 </div>
-                                <div>
+                            </div>
+                        </article>
+
+                        <article class="panel">
+                            <div class="section-head">
+                                <h2>Active Users</h2>
+                                <input
+                                    v-model.trim="userSearchQuery"
+                                    class="user-search"
+                                    type="search"
+                                    placeholder="Search username"
+                                    aria-label="Search active users by username"
+                                >
+                            </div>
+                            <div v-if="!dashboard.social_dashboard.active_users.length" class="empty">No active users.</div>
+                            <div v-else-if="!filteredActiveUsers.length" class="empty">No users match your search.</div>
+                            <div v-for="user in filteredActiveUsers" :key="user.id" class="user-row">
+                                <div class="user-main">
+                                    <div class="avatar avatar-sm" :style="avatarStyle(user.username)" aria-hidden="true">
+                                        {{ userInitials(user.username) }}
+                                    </div>
+                                    <div>
+                                        <strong>{{ user.username }}</strong>
+                                        <div class="muted small">
+                                            Tests {{ user.tests_done }} | Success {{ Number(user.success_rate_percent).toFixed(2) }}%
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="user-actions">
                                     <button
                                         v-if="user.id !== me.id && dashboard.social_dashboard.following_user_ids.includes(user.id)"
-                                        class="btn secondary small"
+                                        class="btn secondary small icon-btn user-action-btn"
                                         @click="toggleFollow(user.id, true)"
-                                    >Unfollow</button>
+                                        aria-label="Unfollow user"
+                                        title="Unfollow"
+                                    >
+                                        <i class="bi bi-person-dash-fill icon" aria-hidden="true"></i>
+                                    </button>
                                     <button
                                         v-else-if="user.id !== me.id"
-                                        class="btn primary small"
+                                        class="btn primary small icon-btn user-action-btn"
                                         @click="toggleFollow(user.id, false)"
-                                    >Follow</button>
+                                        aria-label="Follow user"
+                                        title="Follow"
+                                    >
+                                        <i class="bi bi-person-plus-fill icon" aria-hidden="true"></i>
+                                    </button>
                                     <span v-else class="you-badge">You</span>
                                 </div>
                             </div>
@@ -179,90 +244,352 @@
                     </article>
                 </section>
 
-                <section v-else-if="view==='admin' && isAdmin" class="admin-grid">
-                    <article class="panel">
-                        <h2>Simplified Test Constructor</h2>
-                        <p class="muted">Create or update test configuration and add a new question in one action.</p>
-                        <div class="form-grid">
-                            <input v-model.trim="admin.builder.topic_name" placeholder="Topic name">
-                            <input v-model.trim="admin.builder.level_name" placeholder="Level name">
-                            <input v-model.number="admin.builder.duration_minutes" type="number" min="1" placeholder="Duration (minutes)">
-                            <input v-model.number="admin.builder.passing_percent" type="number" min="1" max="100" step="0.01" placeholder="Passing %">
-                            <textarea v-model.trim="admin.builder.question_text" rows="3" placeholder="Question text"></textarea>
-                            <input v-model.trim="admin.builder.options[0]" placeholder="Option 1">
-                            <input v-model.trim="admin.builder.options[1]" placeholder="Option 2">
-                            <input v-model.trim="admin.builder.options[2]" placeholder="Option 3">
-                            <input v-model.trim="admin.builder.options[3]" placeholder="Option 4">
-                            <input v-model.number="admin.builder.correct_index" type="number" min="0" max="3" placeholder="Correct option index (0-3)">
-                            <button class="btn primary" @click="submitBuilder" :disabled="busy">Save Test + Add Question</button>
+                <section v-else-if="view==='admin' && isAdmin" class="admin-layout">
+                    <aside class="admin-sidebar">
+                        <div class="admin-brand">Testing Platform</div>
+                        <nav class="admin-nav">
+                            <button
+                                class="admin-nav-btn"
+                                :class="{ active: admin.activeTab === 'tests' }"
+                                @click="admin.activeTab = 'tests'"
+                                :disabled="busy"
+                                title="Test Manager"
+                            >
+                                <i class="bi bi-journal-check icon" aria-hidden="true"></i>
+                                <span class="admin-nav-mini">Tests</span>
+                            </button>
+                            <button
+                                class="admin-nav-btn"
+                                :class="{ active: admin.activeTab === 'users' }"
+                                @click="admin.activeTab = 'users'"
+                                :disabled="busy"
+                                title="User Manager"
+                            >
+                                <i class="bi bi-people icon" aria-hidden="true"></i>
+                                <span class="admin-nav-mini">Users</span>
+                            </button>
+                        </nav>
+                    </aside>
+
+                    <aside class="panel admin-catalog">
+                        <div class="section-head">
+                            <h3>{{ admin.activeTab === 'tests' ? 'Tests Available' : 'Users' }}</h3>
+                            <span class="small muted" v-if="admin.activeTab === 'tests'">{{ filteredAdminTestConfigs.length }}</span>
+                            <span class="small muted" v-else>{{ filteredAdminUsers.length }}</span>
                         </div>
-                    </article>
 
-                    <article class="panel">
-                        <h2>User Manager</h2>
-                        <div class="form-grid">
-                            <h3>Create User</h3>
-                            <input v-model.trim="admin.createUser.username" placeholder="Username">
-                            <input v-model.trim="admin.createUser.email" placeholder="Email">
-                            <input v-model="admin.createUser.password" type="password" placeholder="Password">
-                            <select v-model="admin.createUser.role">
-                                <option value="user">user</option>
-                                <option v-if="me.role === 'super_admin'" value="admin">admin</option>
-                            </select>
-                            <input v-model.number="admin.createUser.credits" type="number" min="0" placeholder="Starting credits">
-                            <button class="btn primary" @click="createUser" :disabled="busy">Create User</button>
+                        <input
+                            v-if="admin.activeTab === 'tests'"
+                            v-model.trim="admin.testSearchQuery"
+                            class="admin-sidebar-input"
+                            type="search"
+                            placeholder="Search tests"
+                        >
+                        <input
+                            v-else
+                            v-model.trim="admin.userSearchQuery"
+                            class="admin-sidebar-input"
+                            type="search"
+                            placeholder="Search users"
+                        >
+                        <div class="admin-catalog-actions">
+                            <button
+                                class="admin-catalog-action-btn"
+                                type="button"
+                                @click="admin.activeTab === 'tests' ? openCreateTestMode() : openCreateUserMode()"
+                                :disabled="busy"
+                                aria-label="Create"
+                                title="Create"
+                            >
+                                <i class="bi bi-plus-circle icon" aria-hidden="true"></i>
+                            </button>
+                            <button
+                                class="admin-catalog-action-btn"
+                                type="button"
+                                @click="admin.activeTab === 'tests' ? openUpdateTestMode() : openUpdateUserMode()"
+                                :disabled="busy || (admin.activeTab === 'tests' ? !activeAdminTestConfig : !activeAdminUser)"
+                                aria-label="Edit"
+                                title="Edit"
+                            >
+                                <i class="bi bi-pencil-square icon" aria-hidden="true"></i>
+                            </button>
+                            <button
+                                class="admin-catalog-action-btn danger"
+                                type="button"
+                                @click="admin.activeTab === 'tests' ? requestDeleteAdminTest() : requestDeleteAdminUser()"
+                                :disabled="busy || (admin.activeTab === 'tests' ? !activeAdminTestConfig : !activeAdminUser)"
+                                aria-label="Remove"
+                                title="Remove"
+                            >
+                                <i class="bi bi-trash3 icon" aria-hidden="true"></i>
+                            </button>
                         </div>
 
-                        <div class="divider"></div>
+                        <div class="admin-catalog-list" v-if="admin.activeTab === 'tests'">
+                            <div v-if="!admin.test_configs.length" class="empty small">No test configurations.</div>
+                            <div v-else-if="!filteredAdminTestConfigs.length" class="empty small">No tests match search.</div>
+                            <button
+                                v-for="cfg in filteredAdminTestConfigs"
+                                :key="cfg.id"
+                                class="admin-catalog-item"
+                                :class="{ active: activeAdminTestConfig && activeAdminTestConfig.id === cfg.id }"
+                                @click="selectAdminTest(cfg.id)"
+                            >
+                                <strong>{{ cfg.topic_name }} - {{ cfg.level_name }}</strong>
+                                <span class="small muted">
+                                    Duration {{ cfg.duration_minutes }} min | Pass {{ Number(cfg.passing_percent).toFixed(2) }}% | Questions {{ cfg.question_count }}
+                                </span>
+                                <span :class="['admin-state-badge', cfg.is_active ? 'active' : 'inactive']">
+                                    {{ cfg.is_active ? 'active' : 'inactive' }}
+                                </span>
+                            </button>
+                        </div>
 
-                        <h3>Edit Existing User</h3>
-                        <select v-model.number="admin.selectedUserId" @change="selectUser">
-                            <option :value="0">Select user</option>
-                            <option v-for="user in admin.users" :key="user.id" :value="user.id">
-                                #{{ user.id }} {{ user.username }}
-                            </option>
-                        </select>
+                        <div class="admin-catalog-list" v-else>
+                            <div v-if="!admin.users.length" class="empty small">No users available.</div>
+                            <div v-else-if="!filteredAdminUsers.length" class="empty small">No users match search.</div>
+                            <button
+                                v-for="user in filteredAdminUsers"
+                                :key="user.id"
+                                class="admin-catalog-item compact"
+                                :class="{ active: admin.selectedUserId === user.id }"
+                                @click="selectAdminUser(user.id)"
+                            >
+                                <strong>{{ user.username }}</strong>
+                                <span class="small muted">{{ user.email }}</span>
+                            </button>
+                        </div>
+                    </aside>
 
-                        <div v-if="admin.selectedUserStats" class="form-grid">
-                            <input v-model.trim="admin.editUser.username" placeholder="Username">
-                            <input v-model.trim="admin.editUser.email" placeholder="Email">
-                            <select v-model="admin.editUser.role" :disabled="admin.selectedUserStats.user.role === 'super_admin'">
-                                <option value="user">user</option>
-                                <option v-if="me.role === 'super_admin'" value="admin">admin</option>
-                            </select>
-                            <input v-model.number="admin.editUser.credits" type="number" min="0" placeholder="Total credits">
-                            <select v-model="admin.editUser.is_active">
-                                <option :value="true">active</option>
-                                <option :value="false">inactive</option>
-                            </select>
-                            <input v-model="admin.editUser.password" type="password" placeholder="New password (optional)">
-                            <button class="btn primary" @click="saveUser" :disabled="busy">Save User</button>
-                            <div class="credits-row">
-                                <input v-model.number="admin.editUser.credits_to_add" type="number" min="1" placeholder="Credits to add">
-                                <button class="btn secondary" @click="addCredits" :disabled="busy">Add Credits</button>
+                    <div class="admin-content">
+                        <template v-if="admin.activeTab === 'tests'">
+                            <article class="panel admin-selected-test" v-if="activeAdminTestConfig">
+                                <div class="section-head">
+                                    <div>
+                                        <h2>{{ activeAdminTestConfig.topic_name }} - {{ activeAdminTestConfig.level_name }}</h2>
+                                        <div class="small muted">
+                                            Duration {{ activeAdminTestConfig.duration_minutes }} min |
+                                            Pass {{ Number(activeAdminTestConfig.passing_percent).toFixed(2) }}% |
+                                            Status {{ activeAdminTestConfig.is_active ? 'active' : 'inactive' }}
+                                        </div>
+                                    </div>
+                                    <div class="admin-test-card-actions">
+                                        <button class="btn primary small" @click="openAddQuestionModal(activeAdminTestConfig)" :disabled="busy">Add Question</button>
+                                    </div>
+                                </div>
+
+                                <div v-if="!activeAdminTestQuestions.length" class="empty small">
+                                    No questions yet for this test.
+                                </div>
+                                <div v-else class="admin-question-table-wrap">
+                                    <table class="admin-question-table">
+                                        <thead>
+                                            <tr>
+                                                <th>Question</th>
+                                                <th v-for="optionIndex in adminQuestionOptionIndexes" :key="`head-${optionIndex}`">
+                                                    Option {{ optionLetter(optionIndex) }}
+                                                </th>
+                                                <th>Answer</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            <tr
+                                                v-for="question in activeAdminTestQuestions"
+                                                :key="question.id"
+                                                class="admin-question-row"
+                                                role="button"
+                                                tabindex="0"
+                                                @click="openEditQuestionModal(question)"
+                                                @keyup.enter="openEditQuestionModal(question)"
+                                            >
+                                                <td>{{ question.question_text }}</td>
+                                                <td v-for="optionIndex in adminQuestionOptionIndexes" :key="`opt-${question.id}-${optionIndex}`">
+                                                    {{ questionOptionAt(question, optionIndex) }}
+                                                </td>
+                                                <td>{{ questionCorrectText(question) }}</td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </article>
+                        </template>
+
+                        <article v-else class="panel">
+                            <div class="section-head admin-test-head">
+                                <h2>User Manager</h2>
+                                <div class="admin-test-menu">
+                                    <button
+                                        class="btn small"
+                                        :class="admin.userFormMode === 'create' ? 'primary' : 'secondary'"
+                                        @click="openCreateUserMode"
+                                        :disabled="busy"
+                                    >Create User</button>
+                                    <button
+                                        class="btn small"
+                                        :class="admin.userFormMode === 'update' ? 'primary' : 'secondary'"
+                                        @click="openUpdateUserMode"
+                                        :disabled="busy || !activeAdminUser"
+                                    >Edit User</button>
+                                </div>
                             </div>
-                            <div class="small muted">
-                                Tests: {{ admin.selectedUserStats.tests_done }} |
-                                Success: {{ Number(admin.selectedUserStats.success_rate_percent).toFixed(2) }}%
-                            </div>
-                        </div>
-                    </article>
 
-                    <article class="panel full">
-                        <h2>Test Configurations</h2>
-                        <div v-if="!admin.test_configs.length" class="empty">No test configurations.</div>
-                        <div v-for="cfg in admin.test_configs" :key="cfg.id" class="config-row">
-                            <input v-model.trim="cfg.topic_name">
-                            <input v-model.trim="cfg.level_name">
-                            <input v-model.number="cfg.duration_minutes" type="number" min="1">
-                            <input v-model.number="cfg.passing_percent" type="number" min="1" max="100" step="0.01">
-                            <select v-model="cfg.is_active">
-                                <option :value="true">active</option>
-                                <option :value="false">inactive</option>
-                            </select>
-                            <button class="btn primary small" @click="saveConfig(cfg)" :disabled="busy">Update</button>
-                        </div>
-                    </article>
+                            <div v-if="admin.userFormMode === 'create'" class="form-grid admin-user-form">
+                                <input v-model.trim="admin.createUser.username" placeholder="Username">
+                                <input v-model.trim="admin.createUser.email" placeholder="Email">
+                                <input v-model="admin.createUser.password" type="password" placeholder="Password">
+                                <select v-model="admin.createUser.role">
+                                    <option value="user">user</option>
+                                    <option v-if="me.role === 'super_admin'" value="admin">admin</option>
+                                </select>
+                                <input v-model.number="admin.createUser.credits" type="number" min="0" placeholder="Starting credits">
+                                <button class="btn primary" @click="createUser" :disabled="busy">Create User</button>
+                            </div>
+
+                            <div v-else>
+                                <div v-if="!activeAdminUser" class="empty small">Select a user to edit.</div>
+                                <div v-else-if="admin.selectedUserStats" class="form-grid admin-user-form">
+                                    <div class="small muted">
+                                        Editing #{{ admin.selectedUserStats.user.id }} {{ admin.selectedUserStats.user.username }}
+                                    </div>
+                                    <input v-model.trim="admin.editUser.username" placeholder="Username">
+                                    <input v-model.trim="admin.editUser.email" placeholder="Email">
+                                    <select v-model="admin.editUser.role" :disabled="admin.selectedUserStats.user.role === 'super_admin'">
+                                        <option value="user">user</option>
+                                        <option v-if="me.role === 'super_admin'" value="admin">admin</option>
+                                    </select>
+                                    <input v-model.number="admin.editUser.credits" type="number" min="0" placeholder="Total credits">
+                                    <select v-model="admin.editUser.is_active">
+                                        <option :value="true">active</option>
+                                        <option :value="false">inactive</option>
+                                    </select>
+                                    <input v-model="admin.editUser.password" type="password" placeholder="New password (optional)">
+                                    <button class="btn primary" @click="saveUser" :disabled="busy">Save User</button>
+                                    <div class="credits-row">
+                                        <input v-model.number="admin.editUser.credits_to_add" type="number" min="1" placeholder="Credits to add">
+                                        <button class="btn secondary" @click="addCredits" :disabled="busy">Add Credits</button>
+                                    </div>
+                                    <div class="small muted">
+                                        Tests: {{ admin.selectedUserStats.tests_done }} |
+                                        Success: {{ Number(admin.selectedUserStats.success_rate_percent).toFixed(2) }}%
+                                    </div>
+                                </div>
+                            </div>
+                        </article>
+                    </div>
+
+                    <div v-if="admin.questionModalOpen" class="admin-modal-backdrop" @click.self="closeQuestionModal">
+                        <article class="admin-modal">
+                            <div class="section-head admin-modal-head">
+                                <h3>{{ questionModalTitle }}</h3>
+                                <div class="admin-modal-head-actions">
+                                    <button
+                                        v-if="admin.questionModalMode === 'edit'"
+                                        class="admin-delete-icon-btn"
+                                        type="button"
+                                        @click="requestDeleteAdminQuestion()"
+                                        :disabled="busy"
+                                        aria-label="Delete question"
+                                        title="Delete question"
+                                    >
+                                        <i class="bi bi-trash3" aria-hidden="true"></i>
+                                    </button>
+                                    <button class="admin-close-btn" type="button" @click="closeQuestionModal" aria-label="Close">
+                                        <i class="bi bi-x-lg" aria-hidden="true"></i>
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="form-grid admin-question-form">
+                                <select v-model.number="admin.questionForm.test_config_id" :disabled="admin.questionModalMode === 'edit'">
+                                    <option :value="0">Select test</option>
+                                    <option v-for="cfg in admin.test_configs" :key="cfg.id" :value="cfg.id">
+                                        {{ cfg.topic_name }} - {{ cfg.level_name }}
+                                    </option>
+                                </select>
+                                <textarea v-model.trim="admin.questionForm.question_text" rows="3" placeholder="Question text"></textarea>
+                                <div
+                                    v-for="(optionValue, optionIndex) in admin.questionForm.options"
+                                    :key="`opt-${optionIndex}`"
+                                    class="question-option-row"
+                                >
+                                    <input
+                                        v-model.trim="admin.questionForm.options[optionIndex]"
+                                        :placeholder="`Option ${optionIndex + 1}`"
+                                    >
+                                    <label class="option-correct-toggle">
+                                        <input
+                                            type="checkbox"
+                                            :checked="isCorrectOption(optionIndex)"
+                                            @change="toggleCorrectOption(optionIndex, $event.target.checked)"
+                                        >
+                                        <span>Correct</span>
+                                    </label>
+                                    <button
+                                        class="option-remove-btn"
+                                        type="button"
+                                        @click="removeQuestionOption(optionIndex)"
+                                        :disabled="admin.questionForm.options.length <= 2"
+                                        aria-label="Remove option"
+                                        title="Remove option"
+                                    >
+                                        <i class="bi bi-dash-lg" aria-hidden="true"></i>
+                                    </button>
+                                </div>
+                                <button
+                                    class="btn secondary small add-option-btn icon-with-label"
+                                    type="button"
+                                    @click="addQuestionOption"
+                                    :disabled="admin.questionForm.options.length >= 10"
+                                >
+                                    <i class="bi bi-plus-circle icon" aria-hidden="true"></i>
+                                    <span>Add Option</span>
+                                </button>
+                                <div class="admin-modal-actions">
+                                    <button class="btn secondary" type="button" @click="closeQuestionModal" :disabled="busy">Cancel</button>
+                                    <button class="btn primary" @click="submitAdminQuestion" :disabled="busy || !admin.questionForm.test_config_id">
+                                        {{ questionSubmitLabel }}
+                                    </button>
+                                </div>
+                            </div>
+                        </article>
+                    </div>
+
+                    <div v-if="admin.testModalOpen" class="admin-modal-backdrop" @click.self="closeTestModal">
+                        <article class="admin-modal">
+                            <div class="section-head admin-modal-head">
+                                <h3>{{ adminTestModalTitle }}</h3>
+                                <button class="admin-close-btn" type="button" @click="closeTestModal" aria-label="Close">
+                                    <i class="bi bi-x-lg" aria-hidden="true"></i>
+                                </button>
+                            </div>
+                            <div class="form-grid admin-test-form">
+                                <input v-model.trim="admin.testForm.topic_name" placeholder="Topic name">
+                                <input v-model.trim="admin.testForm.level_name" placeholder="Level name">
+                                <input v-model.number="admin.testForm.duration_minutes" type="number" min="1" placeholder="Duration (minutes)">
+                                <input v-model.number="admin.testForm.passing_percent" type="number" min="1" max="100" step="0.01" placeholder="Passing %">
+                                <select v-model="admin.testForm.is_active">
+                                    <option :value="true">active</option>
+                                    <option :value="false">inactive</option>
+                                </select>
+                                <div class="admin-modal-actions">
+                                    <button class="btn secondary" type="button" @click="closeTestModal" :disabled="busy">Cancel</button>
+                                    <button class="btn primary" type="button" @click="saveAdminTest" :disabled="busy">
+                                        {{ adminTestSubmitLabel }}
+                                    </button>
+                                </div>
+                            </div>
+                        </article>
+                    </div>
+
+                    <div v-if="admin.confirmModalOpen" class="admin-modal-backdrop" @click.self="closeConfirmModal">
+                        <article class="admin-modal confirm-modal">
+                            <h3>{{ admin.confirmModal.title }}</h3>
+                            <p class="muted confirm-message">{{ admin.confirmModal.message }}</p>
+                            <div class="admin-modal-actions">
+                                <button class="btn secondary" type="button" @click="closeConfirmModal" :disabled="busy">Cancel</button>
+                                <button class="btn danger" type="button" @click="confirmModalAction" :disabled="busy">Delete</button>
+                            </div>
+                        </article>
+                    </div>
                 </section>
             </section>
         </main>

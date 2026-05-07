@@ -5,7 +5,7 @@ from tkinter import messagebox, ttk
 import requests
 
 
-API_BASE_URL = os.getenv("PLATFORM_API_URL", "http://localhost:8000").rstrip("/")
+API_BASE_URL = os.getenv("PLATFORM_API_URL", "https://tester-pykb.onrender.com/").rstrip("/")
 
 
 class APIError(Exception):
