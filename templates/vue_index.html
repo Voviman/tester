@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Testing Platform</title>
+    <link rel="stylesheet" href="/static/vue-style.css">
+</head>
+<body>
+    <div id="app" class="site-shell">
+        <header class="app-header" v-if="authenticated">
+            <div class="app-header-inner">
+                <div class="brand">Testing Platform</div>
+                <nav class="app-nav">
+                    <button class="nav-btn" :class="{active: view==='dashboard'}" @click="setView('dashboard')">Dashboard</button>
+                    <button class="nav-btn" :class="{active: view==='profile'}" @click="setView('profile')">Profile</button>
+                    <button v-if="isAdmin" class="nav-btn" :class="{active: view==='admin'}" @click="setView('admin')">Admin</button>
+                </nav>
+                <div class="header-right">
+                    <span class="user-pill">{{ me?.username }}</span>
+                    <button class="btn secondary" @click="logout">Logout</button>
+                </div>
+            </div>
+        </header>
+
+        <main class="app-main">
+            <div v-if="booting" class="state-card">Loading...</div>
+
+            <section v-else-if="!authenticated" class="auth-wrap">
+                <div class="auth-card">
+                    <h1>Sign in</h1>
+                    <p class="muted">Website is community dashboard only. Tests are taken from desktop app.</p>
+                    <div v-if="error" class="alert error">{{ error }}</div>
+                    <label>Username or Email</label>
+                    <input v-model.trim="login.username" type="text" placeholder="Enter username or email">
+                    <label>Password</label>
+                    <input v-model="login.password" type="password" placeholder="Enter password" @keyup.enter="loginSubmit">
+                    <button class="btn primary full" @click="loginSubmit" :disabled="busy">Login</button>
+                </div>
+            </section>
+
+            <section v-else>
+                <div v-if="success" class="alert success">{{ success }}</div>
+                <div v-if="error" class="alert error">{{ error }}</div>
+
+                <section v-if="view==='dashboard'" class="dashboard-grid">
+                    <div class="main-col">
+                        <article class="panel">
+                            <h2>Available Tests</h2>
+                            <p class="muted">Desktop application only. Discuss tests below.</p>
+                            <div v-if="!dashboard.social_dashboard.tests.length" class="empty">No active tests found.</div>
+                            <div
+                                v-for="test in dashboard.social_dashboard.tests"
+                                :key="test.id"
+                                class="test-card"
+                                :data-watermark="`${test.topic_name} ${test.level_name}`"
+                            >
+                                <div class="test-top">
+                                    <div>
+                                        <h3>{{ test.topic_name }} - {{ test.level_name }}</h3>
+                                        <div class="muted small">
+                                            {{ Math.floor(test.duration_seconds / 60) }} min |
+                                            Pass {{ Number(test.passing_percent).toFixed(2) }}% |
+                                            {{ test.question_count }} questions
+                                        </div>
+                                    </div>
+                                    <span class="desktop-badge">Desktop only</span>
+                                </div>
+
+                                <div class="comment-form">
+                                    <textarea
+                                        v-model="commentDrafts[test.id]"
+                                        rows="2"
+                                        placeholder="Share feedback or tips for this test..."
+                                    ></textarea>
+                                    <button class="btn primary small" @click="postComment(test.id)" :disabled="busy">Post comment</button>
+                                </div>
+
+                                <div class="comment-list">
+                                    <div
+                                        v-for="comment in (dashboard.comments_by_test[test.id] || [])"
+                                        :key="comment.id"
+                                        class="comment-item"
+                                    >
+                                        <div class="comment-meta">
+                                            <strong>{{ comment.username }}</strong>
+                                            <span>{{ formatDate(comment.created_at) }}</span>
+                                        </div>
+                                        <p>{{ comment.content }}</p>
+                                    </div>
+                                    <div v-if="!(dashboard.comments_by_test[test.id] || []).length" class="empty small">
+                                        No comments yet.
+                                    </div>
+                                </div>
+                            </div>
+                        </article>
+
+                        <article class="panel">
+                            <h2>Recent Results Feed</h2>
+                            <div v-if="!dashboard.social_dashboard.recent_results.length" class="empty">No results yet.</div>
+                            <div v-for="item in dashboard.social_dashboard.recent_results" :key="item.attempt_id" class="feed-row">
+                                <div>
+                                    <strong>{{ item.username }}</strong> completed
+                                    <strong>{{ item.topic_name }} - {{ item.level_name }}</strong>
+                                </div>
+                                <div class="muted small">
+                                    {{ item.score }}/{{ item.total_questions }} ({{ Number(item.success_percent).toFixed(2) }}%)
+                                    - <span :class="item.passed ? 'ok' : 'bad'">{{ item.passed ? 'Passed' : 'Failed' }}</span>
+                                    - {{ formatDate(item.ended_at) }}
+                                </div>
+                            </div>
+                        </article>
+                    </div>
+
+                    <aside class="side-col">
+                        <article class="panel">
+                            <h2>Your Snapshot</h2>
+                            <div class="quick-stats">
+                                <div><span>Credits</span><strong>{{ dashboard.profile.user.credits }}</strong></div>
+                                <div><span>Tests</span><strong>{{ dashboard.profile.tests_done }}</strong></div>
+                                <div><span>Success</span><strong>{{ Number(dashboard.profile.success_rate_percent).toFixed(2) }}%</strong></div>
+                            </div>
+                        </article>
+
+                        <article class="panel">
+                            <h2>Active Users</h2>
+                            <div v-if="!dashboard.social_dashboard.active_users.length" class="empty">No active users.</div>
+                            <div v-for="user in dashboard.social_dashboard.active_users" :key="user.id" class="user-row">
+                                <div>
+                                    <strong>{{ user.username }}</strong>
+                                    <div class="muted small">
+                                        Tests {{ user.tests_done }} | Success {{ Number(user.success_rate_percent).toFixed(2) }}%
+                                    </div>
+                                </div>
+                                <div>
+                                    <button
+                                        v-if="user.id !== me.id && dashboard.social_dashboard.following_user_ids.includes(user.id)"
+                                        class="btn secondary small"
+                                        @click="toggleFollow(user.id, true)"
+                                    >Unfollow</button>
+                                    <button
+                                        v-else-if="user.id !== me.id"
+                                        class="btn primary small"
+                                        @click="toggleFollow(user.id, false)"
+                                    >Follow</button>
+                                    <span v-else class="you-badge">You</span>
+                                </div>
+                            </div>
+                        </article>
+                    </aside>
+                </section>
+
+                <section v-else-if="view==='profile'" class="profile-grid">
+                    <article class="panel">
+                        <h2>My Profile</h2>
+                        <div class="profile-details">
+                            <div><span>Username</span><strong>{{ profile.profile.user.username }}</strong></div>
+                            <div><span>Email</span><strong>{{ profile.profile.user.email }}</strong></div>
+                            <div><span>Credits</span><strong>{{ profile.profile.user.credits }}</strong></div>
+                            <div><span>Tests done</span><strong>{{ profile.profile.tests_done }}</strong></div>
+                            <div><span>Passed</span><strong>{{ profile.profile.passed_tests }}</strong></div>
+                            <div><span>Failed</span><strong>{{ profile.profile.failed_tests }}</strong></div>
+                            <div><span>Success rate</span><strong>{{ Number(profile.profile.success_rate_percent).toFixed(2) }}%</strong></div>
+                        </div>
+                    </article>
+                    <article class="panel">
+                        <h2>My Recent Results</h2>
+                        <div v-if="!profile.my_results.length" class="empty">No recent results yet.</div>
+                        <div v-for="item in profile.my_results" :key="item.attempt_id" class="feed-row">
+                            <div><strong>{{ item.topic_name }} - {{ item.level_name }}</strong></div>
+                            <div class="muted small">
+                                {{ item.score }}/{{ item.total_questions }} ({{ Number(item.success_percent).toFixed(2) }}%)
+                                - <span :class="item.passed ? 'ok' : 'bad'">{{ item.passed ? 'Passed' : 'Failed' }}</span>
+                                - {{ formatDate(item.ended_at) }}
+                            </div>
+                        </div>
+                    </article>
+                </section>
+
+                <section v-else-if="view==='admin' && isAdmin" class="admin-grid">
+                    <article class="panel">
+                        <h2>Simplified Test Constructor</h2>
+                        <p class="muted">Create or update test configuration and add a new question in one action.</p>
+                        <div class="form-grid">
+                            <input v-model.trim="admin.builder.topic_name" placeholder="Topic name">
+                            <input v-model.trim="admin.builder.level_name" placeholder="Level name">
+                            <input v-model.number="admin.builder.duration_minutes" type="number" min="1" placeholder="Duration (minutes)">
+                            <input v-model.number="admin.builder.passing_percent" type="number" min="1" max="100" step="0.01" placeholder="Passing %">
+                            <textarea v-model.trim="admin.builder.question_text" rows="3" placeholder="Question text"></textarea>
+                            <input v-model.trim="admin.builder.options[0]" placeholder="Option 1">
+                            <input v-model.trim="admin.builder.options[1]" placeholder="Option 2">
+                            <input v-model.trim="admin.builder.options[2]" placeholder="Option 3">
+                            <input v-model.trim="admin.builder.options[3]" placeholder="Option 4">
+                            <input v-model.number="admin.builder.correct_index" type="number" min="0" max="3" placeholder="Correct option index (0-3)">
+                            <button class="btn primary" @click="submitBuilder" :disabled="busy">Save Test + Add Question</button>
+                        </div>
+                    </article>
+
+                    <article class="panel">
+                        <h2>User Manager</h2>
+                        <div class="form-grid">
+                            <h3>Create User</h3>
+                            <input v-model.trim="admin.createUser.username" placeholder="Username">
+                            <input v-model.trim="admin.createUser.email" placeholder="Email">
+                            <input v-model="admin.createUser.password" type="password" placeholder="Password">
+                            <select v-model="admin.createUser.role">
+                                <option value="user">user</option>
+                                <option v-if="me.role === 'super_admin'" value="admin">admin</option>
+                            </select>
+                            <input v-model.number="admin.createUser.credits" type="number" min="0" placeholder="Starting credits">
+                            <button class="btn primary" @click="createUser" :disabled="busy">Create User</button>
+                        </div>
+
+                        <div class="divider"></div>
+
+                        <h3>Edit Existing User</h3>
+                        <select v-model.number="admin.selectedUserId" @change="selectUser">
+                            <option :value="0">Select user</option>
+                            <option v-for="user in admin.users" :key="user.id" :value="user.id">
+                                #{{ user.id }} {{ user.username }}
+                            </option>
+                        </select>
+
+                        <div v-if="admin.selectedUserStats" class="form-grid">
+                            <input v-model.trim="admin.editUser.username" placeholder="Username">
+                            <input v-model.trim="admin.editUser.email" placeholder="Email">
+                            <select v-model="admin.editUser.role" :disabled="admin.selectedUserStats.user.role === 'super_admin'">
+                                <option value="user">user</option>
+                                <option v-if="me.role === 'super_admin'" value="admin">admin</option>
+                            </select>
+                            <input v-model.number="admin.editUser.credits" type="number" min="0" placeholder="Total credits">
+                            <select v-model="admin.editUser.is_active">
+                                <option :value="true">active</option>
+                                <option :value="false">inactive</option>
+                            </select>
+                            <input v-model="admin.editUser.password" type="password" placeholder="New password (optional)">
+                            <button class="btn primary" @click="saveUser" :disabled="busy">Save User</button>
+                            <div class="credits-row">
+                                <input v-model.number="admin.editUser.credits_to_add" type="number" min="1" placeholder="Credits to add">
+                                <button class="btn secondary" @click="addCredits" :disabled="busy">Add Credits</button>
+                            </div>
+                            <div class="small muted">
+                                Tests: {{ admin.selectedUserStats.tests_done }} |
+                                Success: {{ Number(admin.selectedUserStats.success_rate_percent).toFixed(2) }}%
+                            </div>
+                        </div>
+                    </article>
+
+                    <article class="panel full">
+                        <h2>Test Configurations</h2>
+                        <div v-if="!admin.test_configs.length" class="empty">No test configurations.</div>
+                        <div v-for="cfg in admin.test_configs" :key="cfg.id" class="config-row">
+                            <input v-model.trim="cfg.topic_name">
+                            <input v-model.trim="cfg.level_name">
+                            <input v-model.number="cfg.duration_minutes" type="number" min="1">
+                            <input v-model.number="cfg.passing_percent" type="number" min="1" max="100" step="0.01">
+                            <select v-model="cfg.is_active">
+                                <option :value="true">active</option>
+                                <option :value="false">inactive</option>
+                            </select>
+                            <button class="btn primary small" @click="saveConfig(cfg)" :disabled="busy">Update</button>
+                        </div>
+                    </article>
+                </section>
+            </section>
+        </main>
+    </div>
+
+    <script>window.PLATFORM_API_URL = "{{ api_base_url }}";</script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+    <script src="/static/vue-app.js"></script>
+</body>
+</html>
