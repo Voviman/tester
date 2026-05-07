@@ -10,10 +10,10 @@ from typing import Annotated
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import jwt
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel, EmailStr, Field
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, create_engine, select
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, create_engine, func, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 
 
@@ -139,6 +139,24 @@ class Attempt(Base):
 
     user: Mapped[User] = relationship(back_populates="attempts")
     test_config: Mapped[TestConfig] = relationship(back_populates="attempts")
+
+
+class UserFollow(Base):
+    __tablename__ = "user_follows"
+
+    follower_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    following_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+
+
+class TestComment(Base):
+    __tablename__ = "test_comments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    test_config_id: Mapped[int] = mapped_column(ForeignKey("test_configs.id"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    content: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
 
 
 def get_db():
@@ -270,6 +288,11 @@ class QuestionPublicOut(BaseModel):
     options: list[str]
 
 
+class QuestionAdminOut(QuestionPublicOut):
+    test_config_id: int
+    correct_index: int
+
+
 class TestStartOut(BaseModel):
     attempt_id: int
     duration_seconds: int
@@ -299,6 +322,91 @@ class ProfileStatsOut(BaseModel):
     success_rate_percent: float
 
 
+class AttemptAdminOut(BaseModel):
+    id: int
+    status: str
+    score: int
+    total_questions: int
+    passed: bool
+    started_at: dt.datetime
+    ended_at: dt.datetime | None
+    topic_name: str
+    level_name: str
+
+
+class UserAdminStatsOut(BaseModel):
+    user: UserOut
+    tests_done: int
+    passed_tests: int
+    failed_tests: int
+    success_rate_percent: float
+    attempts: list[AttemptAdminOut]
+
+
+class UserAdminUpdateIn(BaseModel):
+    username: str | None = Field(default=None, min_length=3, max_length=120)
+    email: EmailStr | None = None
+    role: UserRole | None = None
+    credits: int | None = Field(default=None, ge=0)
+    is_active: bool | None = None
+    password: str | None = Field(default=None, min_length=8, max_length=128)
+
+
+class TestConfigUpdateIn(BaseModel):
+    topic_name: str | None = Field(default=None, min_length=1, max_length=120)
+    level_name: str | None = Field(default=None, min_length=1, max_length=120)
+    duration_seconds: int | None = Field(default=None, ge=30, le=14_400)
+    passing_percent: float | None = Field(default=None, ge=1, le=100)
+    is_active: bool | None = None
+
+
+class QuestionUpdateIn(BaseModel):
+    question_text: str | None = Field(default=None, min_length=5)
+    options: list[str] | None = Field(default=None, min_length=4, max_length=4)
+    correct_index: int | None = Field(default=None, ge=0, le=3)
+
+
+class SocialCommentCreateIn(BaseModel):
+    content: str = Field(min_length=1, max_length=1000)
+
+
+class SocialCommentOut(BaseModel):
+    id: int
+    test_config_id: int
+    user_id: int
+    username: str
+    content: str
+    created_at: dt.datetime
+
+
+class SocialActiveUserOut(BaseModel):
+    id: int
+    username: str
+    tests_done: int
+    success_rate_percent: float
+    follower_count: int
+
+
+class SocialResultOut(BaseModel):
+    attempt_id: int
+    user_id: int
+    username: str
+    topic_name: str
+    level_name: str
+    score: int
+    total_questions: int
+    passed: bool
+    success_percent: float
+    ended_at: dt.datetime | None
+
+
+class SocialDashboardOut(BaseModel):
+    tests: list[TestConfigOut]
+    active_users: list[SocialActiveUserOut]
+    recent_results: list[SocialResultOut]
+    following_user_ids: list[int]
+
+
 def serialize_user(user: User) -> UserOut:
     return UserOut(
         id=user.id,
@@ -307,6 +415,210 @@ def serialize_user(user: User) -> UserOut:
         role=UserRole(user.role),
         credits=user.credits,
         is_active=user.is_active,
+    )
+
+
+def serialize_question_admin(question: Question) -> QuestionAdminOut:
+    return QuestionAdminOut(
+        id=question.id,
+        test_config_id=question.test_config_id,
+        question_text=question.question_text,
+        options=parse_options(question.options_json),
+        correct_index=question.correct_index,
+    )
+
+
+def can_manage_target_user(current_user: User, target_user: User) -> bool:
+    if current_user.role == UserRole.SUPER_ADMIN.value:
+        return True
+    if current_user.role == UserRole.ADMIN.value:
+        return target_user.role == UserRole.USER.value
+    return False
+
+
+def build_user_admin_stats(db: Session, user: User) -> UserAdminStatsOut:
+    attempts = db.scalars(select(Attempt).where(Attempt.user_id == user.id).order_by(Attempt.id.desc())).all()
+    finalized_attempts = [item for item in attempts if item.status != AttemptStatus.IN_PROGRESS.value]
+    tests_done = len(finalized_attempts)
+    passed_tests = len([item for item in finalized_attempts if item.passed])
+    failed_tests = tests_done - passed_tests
+    success_rate = (passed_tests / tests_done * 100) if tests_done else 0.0
+
+    config_ids = {item.test_config_id for item in attempts}
+    config_map = {}
+    if config_ids:
+        configs = db.scalars(select(TestConfig).where(TestConfig.id.in_(config_ids))).all()
+        config_map = {config.id: config for config in configs}
+
+    attempt_rows = []
+    for item in attempts:
+        config = config_map.get(item.test_config_id)
+        attempt_rows.append(
+            AttemptAdminOut(
+                id=item.id,
+                status=item.status,
+                score=item.score,
+                total_questions=item.total_questions,
+                passed=item.passed,
+                started_at=item.started_at,
+                ended_at=item.ended_at,
+                topic_name=config.topic_name if config else "Unknown",
+                level_name=config.level_name if config else "Unknown",
+            )
+        )
+
+    return UserAdminStatsOut(
+        user=serialize_user(user),
+        tests_done=tests_done,
+        passed_tests=passed_tests,
+        failed_tests=failed_tests,
+        success_rate_percent=round(success_rate, 2),
+        attempts=attempt_rows,
+    )
+
+
+def serialize_social_comment(comment: TestComment, username: str) -> SocialCommentOut:
+    return SocialCommentOut(
+        id=comment.id,
+        test_config_id=comment.test_config_id,
+        user_id=comment.user_id,
+        username=username,
+        content=comment.content,
+        created_at=comment.created_at,
+    )
+
+
+def build_social_dashboard(db: Session, current_user: User) -> SocialDashboardOut:
+    tests = db.scalars(
+        select(TestConfig)
+        .where(TestConfig.is_active.is_(True))
+        .order_by(TestConfig.topic_name.asc(), TestConfig.level_name.asc())
+    ).all()
+    tests_out = [
+        TestConfigOut(
+            id=item.id,
+            topic_name=item.topic_name,
+            level_name=item.level_name,
+            duration_seconds=item.duration_seconds,
+            passing_percent=item.passing_percent,
+            is_active=item.is_active,
+            question_count=len(item.questions),
+        )
+        for item in tests
+    ]
+
+    following_ids = db.scalars(
+        select(UserFollow.following_id).where(UserFollow.follower_id == current_user.id)
+    ).all()
+    following_user_ids = [int(item) for item in following_ids]
+
+    recent_attempts = db.scalars(
+        select(Attempt)
+        .where(Attempt.status != AttemptStatus.IN_PROGRESS.value)
+        .order_by(Attempt.ended_at.desc(), Attempt.id.desc())
+        .limit(50)
+    ).all()
+    user_ids_from_attempts = {item.user_id for item in recent_attempts}
+    config_ids_from_attempts = {item.test_config_id for item in recent_attempts}
+
+    user_map = {}
+    if user_ids_from_attempts:
+        users = db.scalars(select(User).where(User.id.in_(user_ids_from_attempts))).all()
+        user_map = {item.id: item for item in users}
+
+    config_map = {}
+    if config_ids_from_attempts:
+        configs = db.scalars(select(TestConfig).where(TestConfig.id.in_(config_ids_from_attempts))).all()
+        config_map = {item.id: item for item in configs}
+
+    recent_results = []
+    for attempt in recent_attempts:
+        user = user_map.get(attempt.user_id)
+        config = config_map.get(attempt.test_config_id)
+        if user is None or config is None:
+            continue
+        total = max(attempt.total_questions, 1)
+        success_percent = (attempt.score / total) * 100
+        recent_results.append(
+            SocialResultOut(
+                attempt_id=attempt.id,
+                user_id=user.id,
+                username=user.username,
+                topic_name=config.topic_name,
+                level_name=config.level_name,
+                score=attempt.score,
+                total_questions=attempt.total_questions,
+                passed=attempt.passed,
+                success_percent=round(success_percent, 2),
+                ended_at=attempt.ended_at,
+            )
+        )
+
+    now = dt.datetime.utcnow()
+    active_cutoff = now - dt.timedelta(days=30)
+    active_ids = db.scalars(
+        select(Attempt.user_id)
+        .where(Attempt.started_at >= active_cutoff)
+        .group_by(Attempt.user_id)
+    ).all()
+    active_user_ids = set(int(item) for item in active_ids)
+    if current_user.id not in active_user_ids:
+        active_user_ids.add(current_user.id)
+
+    active_users = []
+    if active_user_ids:
+        users = db.scalars(
+            select(User).where(User.id.in_(active_user_ids), User.is_active.is_(True)).order_by(User.username.asc())
+        ).all()
+        follower_counts = {
+            int(row[0]): int(row[1])
+            for row in db.execute(
+                select(UserFollow.following_id, func.count(UserFollow.follower_id))
+                .where(UserFollow.following_id.in_(active_user_ids))
+                .group_by(UserFollow.following_id)
+            ).all()
+        }
+        attempts_by_user = {
+            int(row[0]): int(row[1])
+            for row in db.execute(
+                select(Attempt.user_id, func.count(Attempt.id))
+                .where(Attempt.user_id.in_(active_user_ids), Attempt.status != AttemptStatus.IN_PROGRESS.value)
+                .group_by(Attempt.user_id)
+            ).all()
+        }
+        passed_by_user = {
+            int(row[0]): int(row[1])
+            for row in db.execute(
+                select(Attempt.user_id, func.count(Attempt.id))
+                .where(
+                    Attempt.user_id.in_(active_user_ids),
+                    Attempt.status != AttemptStatus.IN_PROGRESS.value,
+                    Attempt.passed.is_(True),
+                )
+                .group_by(Attempt.user_id)
+            ).all()
+        }
+
+        for user in users:
+            tests_done = attempts_by_user.get(user.id, 0)
+            passed = passed_by_user.get(user.id, 0)
+            success_rate = (passed / tests_done * 100) if tests_done else 0.0
+            active_users.append(
+                SocialActiveUserOut(
+                    id=user.id,
+                    username=user.username,
+                    tests_done=tests_done,
+                    success_rate_percent=round(success_rate, 2),
+                    follower_count=follower_counts.get(user.id, 0),
+                )
+            )
+        active_users.sort(key=lambda item: (-item.tests_done, item.username.lower()))
+
+    return SocialDashboardOut(
+        tests=tests_out,
+        active_users=active_users[:30],
+        recent_results=recent_results,
+        following_user_ids=following_user_ids,
     )
 
 
@@ -414,6 +726,20 @@ def admin_list_users(
     return [serialize_user(user) for user in users]
 
 
+@app.get("/admin/users/{user_id}/stats", response_model=UserAdminStatsOut)
+def admin_user_stats(
+    user_id: int,
+    current_user: Annotated[User, Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))],
+    db: Annotated[Session, Depends(get_db)],
+):
+    user = db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found.")
+    if not can_manage_target_user(current_user, user):
+        raise HTTPException(status_code=403, detail="You do not have permission to view this user.")
+    return build_user_admin_stats(db, user)
+
+
 @app.post("/admin/users", response_model=UserOut)
 def admin_create_user(
     payload: UserCreateIn,
@@ -446,16 +772,63 @@ def admin_create_user(
     return serialize_user(user)
 
 
-@app.patch("/admin/users/{user_id}/credits", response_model=UserOut)
-def admin_add_user_credits(
+@app.patch("/admin/users/{user_id}", response_model=UserOut)
+def admin_update_user(
     user_id: int,
-    payload: CreditUpdateIn,
-    _: Annotated[User, Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))],
+    payload: UserAdminUpdateIn,
+    current_user: Annotated[User, Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))],
     db: Annotated[Session, Depends(get_db)],
 ):
     user = db.get(User, user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="User not found.")
+    if not can_manage_target_user(current_user, user):
+        raise HTTPException(status_code=403, detail="You do not have permission to modify this user.")
+
+    if payload.role == UserRole.SUPER_ADMIN:
+        raise HTTPException(status_code=403, detail="Cannot assign super admin role.")
+    if user.role == UserRole.SUPER_ADMIN.value and payload.role is not None and payload.role.value != user.role:
+        raise HTTPException(status_code=403, detail="Super admin role cannot be changed.")
+    if current_user.role == UserRole.ADMIN.value and payload.role is not None and payload.role != UserRole.USER:
+        raise HTTPException(status_code=403, detail="Admins can only assign user role.")
+
+    if payload.username is not None:
+        username_clean = payload.username.strip()
+        same_username = db.scalar(select(User).where(User.username == username_clean, User.id != user.id))
+        if same_username:
+            raise HTTPException(status_code=409, detail="Username already exists.")
+        user.username = username_clean
+    if payload.email is not None:
+        same_email = db.scalar(select(User).where(User.email == payload.email, User.id != user.id))
+        if same_email:
+            raise HTTPException(status_code=409, detail="Email already exists.")
+        user.email = payload.email
+    if payload.role is not None:
+        user.role = payload.role.value
+    if payload.credits is not None:
+        user.credits = payload.credits
+    if payload.is_active is not None:
+        user.is_active = payload.is_active
+    if payload.password is not None and payload.password.strip():
+        user.password_hash = hash_password(payload.password)
+
+    db.commit()
+    db.refresh(user)
+    return serialize_user(user)
+
+
+@app.patch("/admin/users/{user_id}/credits", response_model=UserOut)
+def admin_add_user_credits(
+    user_id: int,
+    payload: CreditUpdateIn,
+    current_user: Annotated[User, Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))],
+    db: Annotated[Session, Depends(get_db)],
+):
+    user = db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found.")
+    if not can_manage_target_user(current_user, user):
+        raise HTTPException(status_code=403, detail="You do not have permission to modify this user.")
     user.credits += payload.credits_to_add
     db.commit()
     db.refresh(user)
@@ -534,6 +907,41 @@ def admin_list_test_configs(
     return result
 
 
+@app.patch("/admin/test-configs/{test_config_id}", response_model=TestConfigOut)
+def admin_update_test_config(
+    test_config_id: int,
+    payload: TestConfigUpdateIn,
+    _: Annotated[User, Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))],
+    db: Annotated[Session, Depends(get_db)],
+):
+    config = db.get(TestConfig, test_config_id)
+    if config is None:
+        raise HTTPException(status_code=404, detail="Test config not found.")
+
+    if payload.topic_name is not None:
+        config.topic_name = payload.topic_name.strip()
+    if payload.level_name is not None:
+        config.level_name = payload.level_name.strip()
+    if payload.duration_seconds is not None:
+        config.duration_seconds = payload.duration_seconds
+    if payload.passing_percent is not None:
+        config.passing_percent = payload.passing_percent
+    if payload.is_active is not None:
+        config.is_active = payload.is_active
+
+    db.commit()
+    db.refresh(config)
+    return TestConfigOut(
+        id=config.id,
+        topic_name=config.topic_name,
+        level_name=config.level_name,
+        duration_seconds=config.duration_seconds,
+        passing_percent=config.passing_percent,
+        is_active=config.is_active,
+        question_count=len(config.questions),
+    )
+
+
 @app.post("/admin/questions", response_model=QuestionPublicOut)
 def admin_add_question(
     payload: QuestionCreateIn,
@@ -559,6 +967,67 @@ def admin_add_question(
     db.commit()
     db.refresh(question)
     return QuestionPublicOut(id=question.id, question_text=question.question_text, options=cleaned_options)
+
+
+@app.get("/admin/questions", response_model=list[QuestionAdminOut])
+def admin_list_questions(
+    _: Annotated[User, Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))],
+    db: Annotated[Session, Depends(get_db)],
+    test_config_id: int | None = Query(default=None),
+):
+    query = select(Question).order_by(Question.id.desc())
+    if test_config_id is not None:
+        query = query.where(Question.test_config_id == test_config_id)
+    questions = db.scalars(query).all()
+    return [serialize_question_admin(item) for item in questions]
+
+
+@app.patch("/admin/questions/{question_id}", response_model=QuestionAdminOut)
+def admin_update_question(
+    question_id: int,
+    payload: QuestionUpdateIn,
+    _: Annotated[User, Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))],
+    db: Annotated[Session, Depends(get_db)],
+):
+    question = db.get(Question, question_id)
+    if question is None:
+        raise HTTPException(status_code=404, detail="Question not found.")
+
+    if payload.question_text is not None:
+        question.question_text = payload.question_text.strip()
+
+    options = parse_options(question.options_json)
+    if payload.options is not None:
+        cleaned_options = [item.strip() for item in payload.options]
+        if any(not item for item in cleaned_options):
+            raise HTTPException(status_code=400, detail="All options are required.")
+        if len(set(item.lower() for item in cleaned_options)) != len(cleaned_options):
+            raise HTTPException(status_code=400, detail="Question options must be unique.")
+        options = cleaned_options
+        question.options_json = json.dumps(cleaned_options)
+
+    if payload.correct_index is not None:
+        question.correct_index = payload.correct_index
+    elif question.correct_index >= len(options):
+        raise HTTPException(status_code=400, detail="Correct index is out of bounds for provided options.")
+
+    db.commit()
+    db.refresh(question)
+    return serialize_question_admin(question)
+
+
+@app.delete("/admin/questions/{question_id}")
+def admin_delete_question(
+    question_id: int,
+    _: Annotated[User, Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))],
+    db: Annotated[Session, Depends(get_db)],
+):
+    question = db.get(Question, question_id)
+    if question is None:
+        raise HTTPException(status_code=404, detail="Question not found.")
+    db.delete(question)
+    db.commit()
+    return {"deleted": True}
 
 
 @app.get("/tests/catalog", response_model=list[TestConfigOut])
@@ -682,6 +1151,97 @@ def user_submit_test(
         success_percent=round(success_percent, 2),
         remaining_credits=current_user.credits,
     )
+
+
+@app.get("/social/dashboard", response_model=SocialDashboardOut)
+def social_dashboard(
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+):
+    return build_social_dashboard(db, current_user)
+
+
+@app.get("/social/comments", response_model=list[SocialCommentOut])
+def social_list_comments(
+    _: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+    test_config_id: int | None = Query(default=None),
+):
+    query = select(TestComment).order_by(TestComment.created_at.desc(), TestComment.id.desc())
+    if test_config_id is not None:
+        query = query.where(TestComment.test_config_id == test_config_id)
+    comments = db.scalars(query.limit(200)).all()
+    if not comments:
+        return []
+    user_ids = {item.user_id for item in comments}
+    users = db.scalars(select(User).where(User.id.in_(user_ids))).all()
+    username_map = {item.id: item.username for item in users}
+    return [serialize_social_comment(item, username_map.get(item.user_id, "unknown")) for item in comments]
+
+
+@app.post("/social/tests/{test_config_id}/comments", response_model=SocialCommentOut)
+def social_add_comment(
+    test_config_id: int,
+    payload: SocialCommentCreateIn,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+):
+    config = db.get(TestConfig, test_config_id)
+    if config is None or not config.is_active:
+        raise HTTPException(status_code=404, detail="Test config not found.")
+    content = payload.content.strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="Comment cannot be empty.")
+    comment = TestComment(
+        test_config_id=test_config_id,
+        user_id=current_user.id,
+        content=content,
+    )
+    db.add(comment)
+    db.commit()
+    db.refresh(comment)
+    return serialize_social_comment(comment, current_user.username)
+
+
+@app.post("/social/follow/{target_user_id}")
+def social_follow_user(
+    target_user_id: int,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+):
+    if target_user_id == current_user.id:
+        raise HTTPException(status_code=400, detail="You cannot follow yourself.")
+    target_user = db.get(User, target_user_id)
+    if target_user is None or not target_user.is_active:
+        raise HTTPException(status_code=404, detail="Target user not found.")
+    existing = db.scalar(
+        select(UserFollow).where(
+            UserFollow.follower_id == current_user.id,
+            UserFollow.following_id == target_user_id,
+        )
+    )
+    if existing is None:
+        db.add(UserFollow(follower_id=current_user.id, following_id=target_user_id))
+        db.commit()
+    return {"following": True, "target_user_id": target_user_id}
+
+
+@app.delete("/social/follow/{target_user_id}")
+def social_unfollow_user(
+    target_user_id: int,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+):
+    follow = db.scalar(
+        select(UserFollow).where(
+            UserFollow.follower_id == current_user.id,
+            UserFollow.following_id == target_user_id,
+        )
+    )
+    if follow is not None:
+        db.delete(follow)
+        db.commit()
+    return {"following": False, "target_user_id": target_user_id}
 
 
 @app.get("/profile/me", response_model=ProfileStatsOut)

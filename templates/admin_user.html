@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+    <div class="section-title-row">
+        <h2>User Profile: {{ user_stats.user.username }}</h2>
+        <a class="btn btn-small btn-muted" href="/admin#users">Back to Admin</a>
+    </div>
+    <div class="stats">
+        <div><span>User ID</span><strong>{{ user_stats.user.id }}</strong></div>
+        <div><span>Credits</span><strong>{{ user_stats.user.credits }}</strong></div>
+        <div><span>Tests done</span><strong>{{ user_stats.tests_done }}</strong></div>
+        <div><span>Passed</span><strong>{{ user_stats.passed_tests }}</strong></div>
+        <div><span>Failed</span><strong>{{ user_stats.failed_tests }}</strong></div>
+        <div><span>Success rate</span><strong>{{ "%.2f"|format(user_stats.success_rate_percent) }}%</strong></div>
+    </div>
+</section>
+
+<section class="grid two">
+    <article class="card">
+        <h3>Edit User</h3>
+        <form class="form-grid" method="post" action="/admin/users/{{ user_stats.user.id }}/update">
+            <label>Username</label>
+            <input name="username" value="{{ user_stats.user.username }}" required>
+            <label>Email</label>
+            <input type="email" name="email" value="{{ user_stats.user.email }}" required>
+            <label>Role</label>
+            {% if user_stats.user.role == "super_admin" %}
+                <input value="super_admin" disabled>
+                <input type="hidden" name="role" value="super_admin">
+            {% else %}
+                <select name="role">
+                    <option value="user" {% if user_stats.user.role == "user" %}selected{% endif %}>user</option>
+                    {% if can_add_admin %}
+                        <option value="admin" {% if user_stats.user.role == "admin" %}selected{% endif %}>admin</option>
+                    {% endif %}
+                </select>
+            {% endif %}
+            <label>Total credits</label>
+            <input type="number" name="credits" min="0" value="{{ user_stats.user.credits }}" required>
+            <label>Status</label>
+            <select name="is_active">
+                <option value="true" {% if user_stats.user.is_active %}selected{% endif %}>active</option>
+                <option value="false" {% if not user_stats.user.is_active %}selected{% endif %}>inactive</option>
+            </select>
+            <label>New password (optional)</label>
+            <input type="password" name="password" placeholder="Leave empty to keep current">
+            <button class="btn" type="submit">Save User Changes</button>
+        </form>
+    </article>
+
+    <article class="card">
+        <h3>Add Credits</h3>
+        <form class="form-grid" method="post" action="/admin/users/{{ user_stats.user.id }}/credits">
+            <label>Credits to add</label>
+            <input type="number" name="credits_to_add" min="1" value="1" required>
+            <button class="btn" type="submit">Add Credits</button>
+        </form>
+    </article>
+</section>
+
+<section class="card">
+    <h3>User Attempt History</h3>
+    <table class="table">
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Topic</th>
+                <th>Level</th>
+                <th>Status</th>
+                <th>Score</th>
+                <th>Passed</th>
+                <th>Started</th>
+                <th>Ended</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in user_stats.attempts %}
+                <tr>
+                    <td>{{ item.id }}</td>
+                    <td>{{ item.topic_name }}</td>
+                    <td>{{ item.level_name }}</td>
+                    <td>{{ item.status }}</td>
+                    <td>{{ item.score }}/{{ item.total_questions }}</td>
+                    <td>{{ item.passed }}</td>
+                    <td>{{ item.started_at }}</td>
+                    <td>{{ item.ended_at or "-" }}</td>
+                </tr>
+            {% else %}
+                <tr><td colspan="8">No attempts for this user.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</section>
+{% endblock %}

@@ -1,55 +1,118 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="grid two">
-    <article class="card">
-        <h2>Profile</h2>
-        <div class="stats">
-            <div><span>Credits</span><strong>{{ profile.user.credits }}</strong></div>
-            <div><span>Tests done</span><strong>{{ profile.tests_done }}</strong></div>
-            <div><span>Passed</span><strong>{{ profile.passed_tests }}</strong></div>
-            <div><span>Failed</span><strong>{{ profile.failed_tests }}</strong></div>
-            <div><span>Success rate</span><strong>{{ "%.2f"|format(profile.success_rate_percent) }}%</strong></div>
-        </div>
-    </article>
-    <article class="card">
-        <h2>How testing works</h2>
-        <ul>
-            <li>1 credit = 1 test try</li>
-            <li>Timer and pass percentage are configured by admin</li>
-            <li>On successful pass, email notification is sent</li>
-        </ul>
-    </article>
+<section class="card">
+    <h2>Community Dashboard</h2>
+    <p class="muted">
+        Tests are available only in the desktop application. This web page is for overview, social interaction,
+        and community progress.
+    </p>
 </section>
 
-<section class="card">
-    <h2>Available tests</h2>
-    <table class="table">
-        <thead>
-            <tr>
-                <th>Topic</th>
-                <th>Level</th>
-                <th>Duration</th>
-                <th>Pass %</th>
-                <th>Questions</th>
-                <th>Action</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for item in catalog %}
-                <tr>
-                    <td>{{ item.topic_name }}</td>
-                    <td>{{ item.level_name }}</td>
-                    <td>{{ (item.duration_seconds // 60) }} min</td>
-                    <td>{{ "%.2f"|format(item.passing_percent) }}%</td>
-                    <td>{{ item.question_count }}</td>
-                    <td><a class="btn btn-small" href="/tests/{{ item.id }}">Start</a></td>
-                </tr>
+<section class="dashboard-layout">
+    <div>
+        <article class="card">
+            <h3>Available Tests</h3>
+            {% for item in social_dashboard.tests %}
+                <div class="test-social-card">
+                    <div class="test-social-header">
+                        <div>
+                            <strong>{{ item.topic_name }} - {{ item.level_name }}</strong>
+                            <div class="muted small">
+                                {{ (item.duration_seconds // 60) }} min | Pass: {{ "%.2f"|format(item.passing_percent) }}% |
+                                Questions: {{ item.question_count }}
+                            </div>
+                        </div>
+                        <span class="badge desktop-only">Desktop only</span>
+                    </div>
+                    <form class="form-grid" method="post" action="/community/tests/{{ item.id }}/comments">
+                        <label>Add comment for this test</label>
+                        <textarea name="content" rows="2" placeholder="Share thoughts, hints, or feedback..." required></textarea>
+                        <button class="btn btn-small" type="submit">Post Comment</button>
+                    </form>
+                    <div class="comment-list">
+                        {% for comment in comments_by_test.get(item.id, []) %}
+                            <div class="comment-item">
+                                <strong>{{ comment.username }}</strong>
+                                <span class="small muted">{{ comment.created_at }}</span>
+                                <p>{{ comment.content }}</p>
+                            </div>
+                        {% else %}
+                            <p class="muted small">No comments yet.</p>
+                        {% endfor %}
+                    </div>
+                </div>
             {% else %}
-                <tr>
-                    <td colspan="6">No active tests available yet.</td>
-                </tr>
+                <p class="muted">No active tests available yet.</p>
             {% endfor %}
-        </tbody>
-    </table>
+        </article>
+
+        <article class="card">
+            <h3>Recent Test Results Feed</h3>
+            <div class="feed-list">
+                {% for result in social_dashboard.recent_results %}
+                    <div class="feed-item">
+                        <div>
+                            <strong>{{ result.username }}</strong>
+                            completed <strong>{{ result.topic_name }} - {{ result.level_name }}</strong>
+                        </div>
+                        <div class="small muted">
+                            Score: {{ result.score }}/{{ result.total_questions }} |
+                            {{ "%.2f"|format(result.success_percent) }}% |
+                            {% if result.passed %}<span class="text-success">Passed</span>{% else %}<span class="text-danger">Failed</span>{% endif %}
+                            | {{ result.ended_at or "-" }}
+                        </div>
+                    </div>
+                {% else %}
+                    <p class="muted">No completed tests in feed yet.</p>
+                {% endfor %}
+            </div>
+        </article>
+    </div>
+
+    <aside>
+        <article class="card">
+            <h3>Your Profile</h3>
+            <div class="stats">
+                <div><span>Credits</span><strong>{{ profile.user.credits }}</strong></div>
+                <div><span>Tests done</span><strong>{{ profile.tests_done }}</strong></div>
+                <div><span>Passed</span><strong>{{ profile.passed_tests }}</strong></div>
+                <div><span>Failed</span><strong>{{ profile.failed_tests }}</strong></div>
+                <div><span>Success rate</span><strong>{{ "%.2f"|format(profile.success_rate_percent) }}%</strong></div>
+            </div>
+        </article>
+
+        <article class="card">
+            <h3>Active Users</h3>
+            <div class="user-list">
+                {% for user in social_dashboard.active_users %}
+                    <div class="user-item">
+                        <div>
+                            <strong>{{ user.username }}</strong>
+                            <div class="small muted">
+                                Tests: {{ user.tests_done }} |
+                                Success: {{ "%.2f"|format(user.success_rate_percent) }}% |
+                                Followers: {{ user.follower_count }}
+                            </div>
+                        </div>
+                        {% if user.id != me.id %}
+                            {% if user.id in social_dashboard.following_user_ids %}
+                                <form method="post" action="/community/unfollow/{{ user.id }}">
+                                    <button class="btn btn-small btn-muted" type="submit">Unfollow</button>
+                                </form>
+                            {% else %}
+                                <form method="post" action="/community/follow/{{ user.id }}">
+                                    <button class="btn btn-small" type="submit">Follow</button>
+                                </form>
+                            {% endif %}
+                        {% else %}
+                            <span class="badge">You</span>
+                        {% endif %}
+                    </div>
+                {% else %}
+                    <p class="muted">No active users to show.</p>
+                {% endfor %}
+            </div>
+        </article>
+    </aside>
 </section>
 {% endblock %}

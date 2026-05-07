@@ -13,9 +13,9 @@
             <nav class="nav-actions">
                 {% if me %}
                     <span class="user-chip">{{ me.username }} ({{ me.role }})</span>
-                    <a href="/dashboard">Dashboard</a>
+                    <a class="{% if active_page == 'dashboard' %}active-link{% endif %}" href="/dashboard">Dashboard</a>
                     {% if me.role in ["admin", "super_admin"] %}
-                        <a href="/admin">Admin</a>
+                        <a class="{% if active_page == 'admin' %}active-link{% endif %}" href="/admin">Admin</a>
                     {% endif %}
                     <form action="/logout" method="post">
                         <button type="submit" class="btn btn-muted">Logout</button>
@@ -26,6 +26,16 @@
             </nav>
         </div>
     </header>
+    {% if me and active_page == "admin" %}
+        <div class="subnav-wrap">
+            <div class="subnav">
+                <a href="/admin#summary">Summary</a>
+                <a href="/admin#users">Users</a>
+                <a href="/admin#test-configs">Test Configs</a>
+                <a href="/admin#questions">Questions</a>
+            </div>
+        </div>
+    {% endif %}
     <main class="page">
         {% if message %}
             <div class="alert success">{{ message }}</div>

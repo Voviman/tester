@@ -1,8 +1,19 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="grid two">
+<section id="summary" class="grid two">
     <article class="card">
-        <h2>Create user</h2>
+        <h2>Admin Overview</h2>
+        <div class="stats">
+            <div><span>Total users</span><strong>{{ stats.total_users }}</strong></div>
+            <div><span>Admins</span><strong>{{ stats.admin_count }}</strong></div>
+            <div><span>Active users</span><strong>{{ stats.active_users }}</strong></div>
+            <div><span>Test configs</span><strong>{{ stats.test_config_count }}</strong></div>
+            <div><span>Questions listed</span><strong>{{ stats.question_count }}</strong></div>
+        </div>
+    </article>
+
+    <article class="card">
+        <h2>Create User</h2>
         <form class="form-grid" method="post" action="/admin/users">
             <label>Username</label>
             <input name="username" required>
@@ -22,58 +33,17 @@
             <button class="btn" type="submit">Create User</button>
         </form>
     </article>
+</section>
 
-    <article class="card">
-        <h2>Add credits</h2>
-        <form class="form-grid" method="post" action="/admin/credits">
-            <label>User ID</label>
-            <input type="number" name="user_id" required>
-            <label>Credits to add</label>
+<section id="users" class="card">
+    <div class="section-title-row">
+        <h2>Users</h2>
+        <form class="inline-form" method="post" action="/admin/credits">
+            <input type="number" name="user_id" placeholder="User ID" required>
             <input type="number" name="credits_to_add" min="1" value="1" required>
-            <button class="btn" type="submit">Add Credits</button>
+            <button class="btn btn-small" type="submit">Quick Add Credits</button>
         </form>
-    </article>
-</section>
-
-<section class="grid two">
-    <article class="card">
-        <h2>Test config</h2>
-        <form class="form-grid" method="post" action="/admin/test-configs">
-            <label>Topic name</label>
-            <input name="topic_name" required>
-            <label>Level name</label>
-            <input name="level_name" required>
-            <label>Duration (minutes)</label>
-            <input type="number" name="duration_minutes" min="1" value="15" required>
-            <label>Passing percent</label>
-            <input type="number" name="passing_percent" min="1" max="100" step="0.01" value="60" required>
-            <button class="btn" type="submit">Save Config</button>
-        </form>
-    </article>
-    <article class="card">
-        <h2>Add question</h2>
-        <form class="form-grid" method="post" action="/admin/questions">
-            <label>Test config ID</label>
-            <input type="number" name="test_config_id" required>
-            <label>Question text</label>
-            <textarea name="question_text" rows="3" required></textarea>
-            <label>Option 1</label>
-            <input name="option_1" required>
-            <label>Option 2</label>
-            <input name="option_2" required>
-            <label>Option 3</label>
-            <input name="option_3" required>
-            <label>Option 4</label>
-            <input name="option_4" required>
-            <label>Correct option index (0-3)</label>
-            <input type="number" name="correct_index" min="0" max="3" value="0" required>
-            <button class="btn" type="submit">Add Question</button>
-        </form>
-    </article>
-</section>
-
-<section class="card">
-    <h2>Users</h2>
+    </div>
     <table class="table">
         <thead>
             <tr>
@@ -83,50 +53,161 @@
                 <th>Role</th>
                 <th>Credits</th>
                 <th>Active</th>
+                <th>Open</th>
             </tr>
         </thead>
         <tbody>
             {% for user in users %}
                 <tr>
                     <td>{{ user.id }}</td>
-                    <td>{{ user.username }}</td>
+                    <td>
+                        {% if me.role == "super_admin" or user.role == "user" %}
+                            <a class="table-link" href="/admin/users/{{ user.id }}">{{ user.username }}</a>
+                        {% else %}
+                            {{ user.username }}
+                        {% endif %}
+                    </td>
                     <td>{{ user.email }}</td>
                     <td>{{ user.role }}</td>
                     <td>{{ user.credits }}</td>
                     <td>{{ user.is_active }}</td>
+                    <td>
+                        {% if me.role == "super_admin" or user.role == "user" %}
+                            <a class="btn btn-small" href="/admin/users/{{ user.id }}">View Stats</a>
+                        {% else %}
+                            <span class="muted">Restricted</span>
+                        {% endif %}
+                    </td>
                 </tr>
             {% else %}
-                <tr><td colspan="6">No users.</td></tr>
+                <tr><td colspan="7">No users.</td></tr>
             {% endfor %}
         </tbody>
     </table>
 </section>
 
-<section class="card">
-    <h2>Test configs</h2>
+<section id="test-configs" class="card">
+    <h2>Test Configurations</h2>
+    <div class="grid two">
+        <article class="card card-soft">
+            <h3>Create Config</h3>
+            <form class="form-grid" method="post" action="/admin/test-configs">
+                <label>Topic name</label>
+                <input name="topic_name" required>
+                <label>Level name</label>
+                <input name="level_name" required>
+                <label>Duration (minutes)</label>
+                <input type="number" name="duration_minutes" min="1" value="15" required>
+                <label>Passing percent</label>
+                <input type="number" name="passing_percent" min="1" max="100" step="0.01" value="60" required>
+                <button class="btn" type="submit">Save Config</button>
+            </form>
+        </article>
+        <article class="card card-soft">
+            <h3>Update Existing Configs</h3>
+            {% for item in test_configs %}
+                <form class="compact-form" method="post" action="/admin/test-configs/{{ item.id }}/update">
+                    <div class="compact-head">Config #{{ item.id }}</div>
+                    <input name="topic_name" value="{{ item.topic_name }}" required>
+                    <input name="level_name" value="{{ item.level_name }}" required>
+                    <input type="number" name="duration_minutes" min="1" value="{{ item.duration_seconds // 60 }}" required>
+                    <input type="number" name="passing_percent" min="1" max="100" step="0.01" value="{{ item.passing_percent }}" required>
+                    <select name="is_active">
+                        <option value="true" {% if item.is_active %}selected{% endif %}>active</option>
+                        <option value="false" {% if not item.is_active %}selected{% endif %}>inactive</option>
+                    </select>
+                    <button class="btn btn-small" type="submit">Update</button>
+                </form>
+            {% else %}
+                <p class="muted">No test configs yet.</p>
+            {% endfor %}
+        </article>
+    </div>
+</section>
+
+<section id="questions" class="card">
+    <div class="section-title-row">
+        <h2>Question Management</h2>
+        <form class="inline-form" method="get" action="/admin">
+            <input type="number" name="question_config_id" placeholder="Filter by config ID">
+            <button class="btn btn-small" type="submit">Filter</button>
+            <a class="btn btn-small btn-muted" href="/admin#questions">Clear</a>
+        </form>
+    </div>
+
+    <div class="grid two">
+        <article class="card card-soft">
+            <h3>Add Question</h3>
+            <form class="form-grid" method="post" action="/admin/questions">
+                <label>Test config ID</label>
+                <input type="number" name="test_config_id" required>
+                <label>Question text</label>
+                <textarea name="question_text" rows="3" required></textarea>
+                <label>Option 1</label>
+                <input name="option_1" required>
+                <label>Option 2</label>
+                <input name="option_2" required>
+                <label>Option 3</label>
+                <input name="option_3" required>
+                <label>Option 4</label>
+                <input name="option_4" required>
+                <label>Correct option index (0-3)</label>
+                <input type="number" name="correct_index" min="0" max="3" value="0" required>
+                <button class="btn" type="submit">Add Question</button>
+            </form>
+        </article>
+        <article class="card card-soft">
+            <h3>Edit Selected Question</h3>
+            {% if edit_question %}
+                <form class="form-grid" method="post" action="/admin/questions/{{ edit_question.id }}/update">
+                    <label>Question ID</label>
+                    <input value="{{ edit_question.id }}" disabled>
+                    <label>Question text</label>
+                    <textarea name="question_text" rows="3" required>{{ edit_question.question_text }}</textarea>
+                    <label>Option 1</label>
+                    <input name="option_1" value="{{ edit_question.options[0] }}" required>
+                    <label>Option 2</label>
+                    <input name="option_2" value="{{ edit_question.options[1] }}" required>
+                    <label>Option 3</label>
+                    <input name="option_3" value="{{ edit_question.options[2] }}" required>
+                    <label>Option 4</label>
+                    <input name="option_4" value="{{ edit_question.options[3] }}" required>
+                    <label>Correct option index (0-3)</label>
+                    <input type="number" name="correct_index" min="0" max="3" value="{{ edit_question.correct_index }}" required>
+                    <button class="btn" type="submit">Update Question</button>
+                </form>
+            {% else %}
+                <p class="muted">Click "Edit" in table below to load a question here.</p>
+            {% endif %}
+        </article>
+    </div>
+
     <table class="table">
         <thead>
             <tr>
                 <th>ID</th>
-                <th>Topic</th>
-                <th>Level</th>
-                <th>Duration</th>
-                <th>Pass %</th>
-                <th>Questions</th>
+                <th>Config ID</th>
+                <th>Question</th>
+                <th>Correct</th>
+                <th>Actions</th>
             </tr>
         </thead>
         <tbody>
-            {% for item in test_configs %}
+            {% for item in questions %}
                 <tr>
                     <td>{{ item.id }}</td>
-                    <td>{{ item.topic_name }}</td>
-                    <td>{{ item.level_name }}</td>
-                    <td>{{ item.duration_seconds // 60 }} min</td>
-                    <td>{{ "%.2f"|format(item.passing_percent) }}%</td>
-                    <td>{{ item.question_count }}</td>
+                    <td>{{ item.test_config_id }}</td>
+                    <td>{{ item.question_text }}</td>
+                    <td>{{ item.correct_index }}</td>
+                    <td class="row-actions">
+                        <a class="btn btn-small" href="/admin?edit_question_id={{ item.id }}#questions">Edit</a>
+                        <form method="post" action="/admin/questions/{{ item.id }}/delete" onsubmit="return confirm('Delete this question?');">
+                            <button class="btn btn-small btn-danger" type="submit">Delete</button>
+                        </form>
+                    </td>
                 </tr>
             {% else %}
-                <tr><td colspan="6">No test configs.</td></tr>
+                <tr><td colspan="5">No questions found.</td></tr>
             {% endfor %}
         </tbody>
     </table>
