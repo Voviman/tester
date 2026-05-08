@@ -80,6 +80,7 @@ class AttemptStatus(str, Enum):
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"
     FAILED = "failed"
+    DISQUALIFIED = "disqualified"
 
 
 class User(Base):
@@ -121,6 +122,8 @@ class TestSection(Base):
     name: Mapped[str] = mapped_column(String(120), index=True)
     select_count: Mapped[int] = mapped_column(Integer, default=1)
     points_per_question: Mapped[int] = mapped_column(Integer, default=1)
+    order_index: Mapped[int] = mapped_column(Integer, default=0)
+    requires_full_score: Mapped[bool] = mapped_column(Boolean, default=False)
 
     test_config: Mapped[TestConfig] = relationship(back_populates="sections")
     questions: Mapped[list["Question"]] = relationship(back_populates="section")
@@ -308,6 +311,14 @@ def shuffled_option_order(option_count: int, randomizer: secrets.SystemRandom) -
     return order
 
 
+def question_points(question: Question) -> int:
+    return question.section.points_per_question if question.section is not None else 1
+
+
+def section_requires_full_score(question: Question) -> bool:
+    return bool(question.section is not None and question.section.requires_full_score)
+
+
 def parse_options(options_json: str, fallback_correct_index: int | None = None) -> list[str]:
     options, _ = parse_question_payload(options_json, fallback_correct_index)
     return options
@@ -397,12 +408,18 @@ class TestSectionCreateIn(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     select_count: int = Field(ge=1)
     points_per_question: int = Field(ge=1, le=100)
+    requires_full_score: bool = False
 
 
 class TestSectionUpdateIn(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     select_count: int | None = Field(default=None, ge=1)
     points_per_question: int | None = Field(default=None, ge=1, le=100)
+    requires_full_score: bool | None = None
+
+
+class TestSectionReorderIn(BaseModel):
+    section_ids: list[int] = Field(min_length=1)
 
 
 class TestSectionOut(BaseModel):
@@ -411,6 +428,8 @@ class TestSectionOut(BaseModel):
     name: str
     select_count: int
     points_per_question: int
+    order_index: int
+    requires_full_score: bool
     question_count: int
 
 
@@ -625,6 +644,8 @@ def serialize_test_section(section: TestSection) -> TestSectionOut:
         name=section.name,
         select_count=section.select_count,
         points_per_question=section.points_per_question,
+        order_index=section.order_index,
+        requires_full_score=section.requires_full_score,
         question_count=len(section.questions),
     )
 
@@ -926,6 +947,11 @@ def on_startup():
             conn.execute(text("ALTER TABLE attempts ADD COLUMN selected_question_ids_json TEXT"))
         if "attempts" in columns_by_table and "option_orders_json" not in attempt_columns:
             conn.execute(text("ALTER TABLE attempts ADD COLUMN option_orders_json TEXT"))
+        section_columns = columns_by_table.get("test_sections", set())
+        if "test_sections" in columns_by_table and "order_index" not in section_columns:
+            conn.execute(text("ALTER TABLE test_sections ADD COLUMN order_index INTEGER DEFAULT 0"))
+        if "test_sections" in columns_by_table and "requires_full_score" not in section_columns:
+            conn.execute(text("ALTER TABLE test_sections ADD COLUMN requires_full_score BOOLEAN DEFAULT 0"))
 
 
 @app.get("/health")
@@ -1003,7 +1029,7 @@ def admin_overview(
     sections = db.scalars(
         select(TestSection)
         .options(selectinload(TestSection.questions))
-        .order_by(TestSection.test_config_id, TestSection.id)
+        .order_by(TestSection.test_config_id, TestSection.order_index, TestSection.id)
     ).all()
     questions = db.scalars(select(Question).order_by(Question.id.desc())).all()
     return AdminOverviewOut(
@@ -1270,11 +1296,19 @@ def admin_create_test_section(
     )
     if duplicate is not None:
         raise HTTPException(status_code=409, detail="A section with this name already exists for this test.")
+    next_order = (
+        db.scalar(
+            select(func.max(TestSection.order_index)).where(TestSection.test_config_id == payload.test_config_id)
+        )
+        or 0
+    ) + 1
     section = TestSection(
         test_config_id=payload.test_config_id,
         name=name,
         select_count=payload.select_count,
         points_per_question=payload.points_per_question,
+        order_index=next_order,
+        requires_full_score=payload.requires_full_score,
     )
     db.add(section)
     db.commit()
@@ -1288,11 +1322,47 @@ def admin_list_test_sections(
     db: Annotated[Session, Depends(get_db)],
     test_config_id: int | None = Query(default=None),
 ):
-    query = select(TestSection).options(selectinload(TestSection.questions)).order_by(TestSection.test_config_id, TestSection.id)
+    query = select(TestSection).options(selectinload(TestSection.questions)).order_by(
+        TestSection.test_config_id,
+        TestSection.order_index,
+        TestSection.id,
+    )
     if test_config_id is not None:
         query = query.where(TestSection.test_config_id == test_config_id)
     sections = db.scalars(query).all()
     return [serialize_test_section(section) for section in sections]
+
+
+@app.patch("/admin/test-configs/{test_config_id}/sections/reorder", response_model=list[TestSectionOut])
+def admin_reorder_test_sections(
+    test_config_id: int,
+    payload: TestSectionReorderIn,
+    _: Annotated[User, Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))],
+    db: Annotated[Session, Depends(get_db)],
+):
+    config = db.get(TestConfig, test_config_id)
+    if config is None:
+        raise HTTPException(status_code=404, detail="Test config not found.")
+    sections = db.scalars(
+        select(TestSection)
+        .options(selectinload(TestSection.questions))
+        .where(TestSection.test_config_id == test_config_id)
+        .order_by(TestSection.order_index, TestSection.id)
+    ).all()
+    section_by_id = {section.id: section for section in sections}
+    ordered_ids = []
+    for item in payload.section_ids:
+        section_id = int(item)
+        if section_id not in section_by_id:
+            raise HTTPException(status_code=400, detail="Section order contains an invalid section.")
+        if section_id not in ordered_ids:
+            ordered_ids.append(section_id)
+    ordered_ids.extend(section.id for section in sections if section.id not in ordered_ids)
+    for index, section_id in enumerate(ordered_ids, start=1):
+        section_by_id[section_id].order_index = index
+    db.commit()
+    reordered = sorted(sections, key=lambda item: (item.order_index, item.id))
+    return [serialize_test_section(section) for section in reordered]
 
 
 @app.patch("/admin/test-sections/{section_id}", response_model=TestSectionOut)
@@ -1321,6 +1391,8 @@ def admin_update_test_section(
         section.select_count = payload.select_count
     if payload.points_per_question is not None:
         section.points_per_question = payload.points_per_question
+    if payload.requires_full_score is not None:
+        section.requires_full_score = payload.requires_full_score
     db.commit()
     db.refresh(section)
     return serialize_test_section(section)
@@ -1502,9 +1574,7 @@ def user_start_test(
         randomizer.shuffle(selected_questions)
     randomizer.shuffle(selected_questions)
     selected_question_ids = [question.id for question in selected_questions]
-    max_score = sum(
-        (question.section.points_per_question if question.section is not None else 1) for question in selected_questions
-    )
+    max_score = sum(question_points(question) for question in selected_questions)
     question_payloads = []
     option_orders: dict[str, list[int]] = {}
     for question in selected_questions:
@@ -1570,9 +1640,10 @@ def user_submit_test(
 
     score = 0
     total_questions = len(questions)
-    max_score = sum((question.section.points_per_question if question.section is not None else 1) for question in questions)
+    max_score = sum(question_points(question) for question in questions)
     answer_map = payload.answers
     option_orders = parse_option_orders(attempt.option_orders_json)
+    scored_by_section: dict[int | None, dict[str, int]] = {}
 
     for question in questions:
         _, correct_indices = parse_question_payload(question.options_json, question.correct_index)
@@ -1592,8 +1663,15 @@ def user_submit_test(
                     if item >= 0 and item < len(option_order)
                 }
             )
+        section_id = question.section_id if section_requires_full_score(question) else None
+        bucket = scored_by_section.setdefault(section_id, {"earned": 0, "possible": 0})
+        bucket["possible"] += question_points(question)
         if selected_indices == correct_indices:
-            score += question.section.points_per_question if question.section is not None else 1
+            bucket["earned"] += question_points(question)
+
+    for section_id, bucket in scored_by_section.items():
+        if section_id is None or bucket["earned"] == bucket["possible"]:
+            score += bucket["earned"]
 
     success_percent = (score / max_score) * 100 if max_score else 0
     passed = success_percent >= config.passing_percent
@@ -1621,6 +1699,48 @@ def user_submit_test(
         score=score,
         total_questions=max_score,
         success_percent=round(success_percent, 2),
+        remaining_credits=current_user.credits,
+    )
+
+
+@app.post("/tests/disqualify/{attempt_id}", response_model=SubmitAttemptOut)
+def user_disqualify_test(
+    attempt_id: int,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+):
+    attempt = db.get(Attempt, attempt_id)
+    if attempt is None or attempt.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Attempt not found.")
+    if attempt.status != AttemptStatus.IN_PROGRESS.value:
+        raise HTTPException(status_code=400, detail="Attempt is already finalized.")
+
+    config = db.get(TestConfig, attempt.test_config_id)
+    if config is None:
+        raise HTTPException(status_code=404, detail="Test config not found.")
+
+    selected_ids = parse_selected_question_ids(attempt.selected_question_ids_json)
+    if selected_ids:
+        question_by_id = {question.id: question for question in config.questions}
+        questions = [question_by_id[question_id] for question_id in selected_ids if question_id in question_by_id]
+    else:
+        questions = list(config.questions)
+    max_score = attempt.max_score or sum(question_points(question) for question in questions)
+
+    attempt.score = 0
+    attempt.total_questions = len(questions)
+    attempt.max_score = max_score
+    attempt.passed = False
+    attempt.status = AttemptStatus.DISQUALIFIED.value
+    attempt.ended_at = dt.datetime.utcnow()
+    db.commit()
+    db.refresh(current_user)
+    return SubmitAttemptOut(
+        attempt_id=attempt.id,
+        passed=False,
+        score=0,
+        total_questions=max_score,
+        success_percent=0,
         remaining_credits=current_user.credits,
     )
 

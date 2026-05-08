@@ -68,13 +68,6 @@
             <section v-else>
                 <div v-if="success" class="alert success">{{ success }}</div>
                 <div v-if="error" class="alert error">{{ error }}</div>
-                <p
-                    v-if="view === 'dashboard' && !desktopParticipationAllowed"
-                    class="muted small dashboard-participate-hint"
-                >
-                    Timed tests can only be taken from the Testing Platform <strong>desktop client</strong>.
-                </p>
-
                 <section v-if="view==='dashboard'" class="dashboard-grid">
                     <aside class="filter-col panel filter-menu-panel" aria-label="Filter tests">
                         <h2 class="filter-menu-heading">Filter tests</h2>
@@ -166,10 +159,10 @@
                                             </span>
                                         </div>
                                     </div>
-                                    <div v-if="desktopParticipationAllowed" class="test-top-actions">
+                                    <div class="test-top-actions">
                                         <button
                                             type="button"
-                                            class="btn primary test-participate-start"
+                                            class="btn primary test-participate-start test-participate-play"
                                             @click="startParticipateInTest(test)"
                                             :disabled="
                                                 busy ||
@@ -181,8 +174,9 @@
                                                     ? 'This test has no questions yet.'
                                                     : 'Use one credit to begin this timed test.'
                                             "
+                                            aria-label="Start test"
                                         >
-                                            Take test
+                                            <i class="bi bi-play-fill" aria-hidden="true"></i>
                                         </button>
                                     </div>
                                 </div>
@@ -420,6 +414,10 @@
                 </section>
 
                 <section v-else-if="view==='profile'" class="profile-page">
+                    <article v-if="profileLoading" class="panel">
+                        <div class="empty">Loading profile...</div>
+                    </article>
+                    <template v-else>
                     <article class="panel profile-hero-panel">
                         <div class="profile-hero">
                             <div
@@ -623,6 +621,7 @@
                             </div>
                         </div>
                     </article>
+                    </template>
                 </section>
 
                 <section v-else-if="view==='admin' && isAdmin" class="admin-layout">
@@ -780,12 +779,34 @@
                                             <span>Points each</span>
                                             <input v-model.number="admin.sectionForm.points_per_question" type="number" min="1">
                                         </label>
+                                        <label class="admin-section-toggle" title="If enabled, this section earns points only when every shown question is correct.">
+                                            <input v-model="admin.sectionForm.requires_full_score" type="checkbox">
+                                            <span>100% required</span>
+                                        </label>
                                         <button class="btn secondary small" type="button" @click="submitAdminSection()" :disabled="busy">
                                             Add Section
                                         </button>
                                     </div>
                                     <div v-if="activeAdminTestSections.length" class="admin-section-list">
-                                        <div v-for="section in activeAdminTestSections" :key="section.id" class="admin-section-row">
+                                        <div
+                                            v-for="section in activeAdminTestSections"
+                                            :key="section.id"
+                                            class="admin-section-row"
+                                            :class="{ 'admin-section-row--dragging': admin.draggingSectionId === section.id }"
+                                            draggable="true"
+                                            @dragstart="adminSectionDragStart(section)"
+                                            @dragend="adminSectionDragEnd"
+                                            @dragover.prevent
+                                            @drop.prevent="dropAdminSection(section)"
+                                        >
+                                            <button
+                                                class="admin-section-drag"
+                                                type="button"
+                                                aria-label="Drag section"
+                                                title="Drag section"
+                                            >
+                                                <i class="bi bi-grip-vertical" aria-hidden="true"></i>
+                                            </button>
                                             <label class="admin-section-field section-name-field">
                                                 <span>Section name</span>
                                                 <input v-model.trim="section.name" aria-label="Section name">
@@ -798,11 +819,19 @@
                                                 <span>Points each</span>
                                                 <input v-model.number="section.points_per_question" type="number" min="1" aria-label="Points each">
                                             </label>
+                                            <label class="admin-section-toggle" title="If enabled, this section earns points only when every shown question is correct.">
+                                                <input v-model="section.requires_full_score" type="checkbox" aria-label="Require 100 percent correct in section">
+                                                <span>100% required</span>
+                                            </label>
                                             <span class="admin-section-bank">{{ section.question_count }} in bank</span>
-                                            <button class="admin-catalog-action-btn" type="button" @click="submitAdminSection(section)" :disabled="busy">Save</button>
-                                            <button class="admin-delete-icon-btn" type="button" @click="requestDeleteAdminSection(section)" :disabled="busy" aria-label="Delete section" title="Delete section">
-                                                <i class="bi bi-trash3" aria-hidden="true"></i>
-                                            </button>
+                                            <div class="admin-section-actions">
+                                                <button class="admin-icon-action-btn" type="button" @click="submitAdminSection(section)" :disabled="busy" aria-label="Save section" title="Save section">
+                                                    <i class="bi bi-floppy" aria-hidden="true"></i>
+                                                </button>
+                                                <button class="admin-delete-icon-btn" type="button" @click="requestDeleteAdminSection(section)" :disabled="busy" aria-label="Delete section" title="Delete section">
+                                                    <i class="bi bi-trash3" aria-hidden="true"></i>
+                                                </button>
+                                            </div>
                                         </div>
                                     </div>
                                 </div>
@@ -810,37 +839,47 @@
                                 <div v-if="!activeAdminTestQuestions.length" class="empty small">
                                     No questions yet for this test.
                                 </div>
-                                <div v-else class="admin-question-table-wrap">
-                                    <table class="admin-question-table">
-                                        <thead>
-                                            <tr>
-                                                <th>Section</th>
-                                                <th>Question</th>
-                                                <th v-for="optionIndex in adminQuestionOptionIndexes" :key="`head-${optionIndex}`">
-                                                    Option {{ optionLetter(optionIndex) }}
-                                                </th>
-                                                <th>Answer</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody>
-                                            <tr
-                                                v-for="question in activeAdminTestQuestions"
-                                                :key="question.id"
-                                                class="admin-question-row"
-                                                role="button"
-                                                tabindex="0"
-                                                @click="openEditQuestionModal(question)"
-                                                @keyup.enter="openEditQuestionModal(question)"
-                                            >
-                                                <td>{{ sectionName(question.section_id) }}</td>
-                                                <td>{{ question.question_text }}</td>
-                                                <td v-for="optionIndex in adminQuestionOptionIndexes" :key="`opt-${question.id}-${optionIndex}`">
-                                                    {{ questionOptionAt(question, optionIndex) }}
-                                                </td>
-                                                <td>{{ questionCorrectText(question) }}</td>
-                                            </tr>
-                                        </tbody>
-                                    </table>
+                                <div v-else class="admin-question-groups">
+                                    <section
+                                        v-for="group in activeAdminQuestionGroups"
+                                        :key="`question-group-${group.id}`"
+                                        class="admin-question-group"
+                                    >
+                                        <div class="admin-question-group-head">
+                                            <h3>{{ group.name }}</h3>
+                                            <span class="small muted">{{ group.questions.length }} in bank</span>
+                                        </div>
+                                        <div class="admin-question-table-wrap">
+                                            <table class="admin-question-table">
+                                                <thead>
+                                                    <tr>
+                                                        <th>Question</th>
+                                                        <th v-for="optionIndex in adminQuestionOptionIndexes" :key="`head-${group.id}-${optionIndex}`">
+                                                            Option {{ optionLetter(optionIndex) }}
+                                                        </th>
+                                                        <th>Answer</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    <tr
+                                                        v-for="question in group.questions"
+                                                        :key="question.id"
+                                                        class="admin-question-row"
+                                                        role="button"
+                                                        tabindex="0"
+                                                        @click="openEditQuestionModal(question)"
+                                                        @keyup.enter="openEditQuestionModal(question)"
+                                                    >
+                                                        <td>{{ question.question_text }}</td>
+                                                        <td v-for="optionIndex in adminQuestionOptionIndexes" :key="`opt-${question.id}-${optionIndex}`">
+                                                            {{ questionOptionAt(question, optionIndex) }}
+                                                        </td>
+                                                        <td>{{ questionCorrectText(question) }}</td>
+                                                    </tr>
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </section>
                                 </div>
                             </article>
                         </template>
@@ -1052,7 +1091,8 @@
                         <h2 id="test-part-heading">{{ testSession.title }}</h2>
                         <p class="muted small test-part-meta">
                             Pass at or above {{ Number(testSession.passingPercent).toFixed(2) }}% · Question
-                            {{ testSession.currentIndex + 1 }} / {{ testSession.questions.length }}
+                            {{ testSession.currentIndex + 1 }} / {{ testSession.questions.length }} Â· Warnings
+                            {{ testSession.antiCheatWarnings }} / {{ testSession.maxWarnings }}
                         </p>
                     </div>
                     <div
@@ -1062,6 +1102,14 @@
                         {{ testParticipationClock }}
                     </div>
                 </header>
+                <div
+                    v-if="testSession.antiCheatWarnings > 0"
+                    class="test-participate-warning"
+                    :class="{ 'test-participate-warning--danger': testSession.antiCheatWarnings >= testSession.maxWarnings - 1 }"
+                >
+                    Warning {{ testSession.antiCheatWarnings }}/{{ testSession.maxWarnings }}:
+                    {{ testSession.lastViolationReason }}
+                </div>
                 <div v-if="testParticipationCurrentQuestion" class="test-participate-body">
                     <p class="test-participate-prompt">{{ testParticipationCurrentQuestion.question_text }}</p>
                     <div class="test-participate-options">

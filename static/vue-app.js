@@ -65,6 +65,7 @@ createApp({
             profileIsPublic: false,
             profilePublicRole: "",
             profileTargetUserId: 0,
+            profileLoading: false,
             desktopParticipationToken: "",
             testSession: null,
             admin: {
@@ -123,7 +124,9 @@ createApp({
                     name: "",
                     select_count: 1,
                     points_per_question: 1,
+                    requires_full_score: false,
                 },
+                draggingSectionId: 0,
                 confirmModalOpen: false,
                 confirmModal: {
                     title: "",
@@ -287,7 +290,34 @@ createApp({
             const target = this.activeAdminTestConfig;
             if (!target) return [];
             const targetId = Number(target.id);
-            return (this.admin.sections || []).filter((item) => Number(item.test_config_id) === targetId);
+            return (this.admin.sections || [])
+                .filter((item) => Number(item.test_config_id) === targetId)
+                .slice()
+                .sort((a, b) => {
+                    const orderA = Number(a.order_index || 0);
+                    const orderB = Number(b.order_index || 0);
+                    if (orderA !== orderB) return orderA - orderB;
+                    return Number(a.id || 0) - Number(b.id || 0);
+                });
+        },
+        activeAdminQuestionGroups() {
+            const questions = this.activeAdminTestQuestions;
+            const groups = this.activeAdminTestSections.map((section) => ({
+                id: Number(section.id),
+                name: section.name,
+                section,
+                questions: questions.filter((question) => Number(question.section_id || 0) === Number(section.id)),
+            }));
+            const unsectioned = questions.filter((question) => !Number(question.section_id || 0));
+            if (unsectioned.length) {
+                groups.push({
+                    id: 0,
+                    name: "Unsectioned",
+                    section: null,
+                    questions: unsectioned,
+                });
+            }
+            return groups;
         },
         activeAdminSelectedQuestionCount() {
             return this.activeAdminTestSections.reduce((total, section) => {
@@ -432,6 +462,23 @@ createApp({
             this.testFilterTopic = "";
             this.testFilterLevel = "";
             this.testFilterDuration = "";
+        },
+        emptyProfilePayload(userId = 0) {
+            return {
+                profile: {
+                    user: {
+                        id: Number(userId || 0),
+                        username: "",
+                        email: "",
+                        credits: 0,
+                    },
+                    tests_done: 0,
+                    passed_tests: 0,
+                    failed_tests: 0,
+                    success_rate_percent: 0,
+                },
+                my_results: [],
+            };
         },
         syncDesktopParticipationFromUrl() {
             const storageKey = "desktop_ptoken_v1";
@@ -769,6 +816,59 @@ createApp({
             this.stopParticipationTimer();
             this.testSession = null;
         },
+        recordParticipationViolation(reason) {
+            const session = this.testSession;
+            if (!session || session.submitted || session.disqualifying || session.antiCheatSuppressed) return;
+            const now = Date.now();
+            if (now - Number(session.lastViolationAt || 0) < 1500) return;
+            session.lastViolationAt = now;
+            session.antiCheatWarnings = Math.min(Number(session.maxWarnings || 5), Number(session.antiCheatWarnings || 0) + 1);
+            session.lastViolationReason = reason;
+            if (session.antiCheatWarnings >= Number(session.maxWarnings || 5)) {
+                void this.disqualifyParticipationTest(reason);
+                return;
+            }
+        },
+        handleParticipationVisibilityChange() {
+            if (document.visibilityState === "hidden") {
+                this.recordParticipationViolation("Do not switch tabs or hide the test window.");
+            }
+        },
+        handleParticipationWindowBlur() {
+            this.recordParticipationViolation("Do not leave the test window.");
+        },
+        handleParticipationBeforeUnload(event) {
+            if (!this.testParticipationActive) return;
+            this.recordParticipationViolation("Do not close or reload the test window.");
+            event.preventDefault();
+            event.returnValue = "A test is in progress. Closing this window can disqualify the attempt.";
+            return event.returnValue;
+        },
+        handleParticipationPageHide() {
+            const session = this.testSession;
+            if (!session || session.submitted) return;
+            const attemptId = Number(session.attemptId || 0);
+            if (!attemptId) return;
+            try {
+                if (navigator.sendBeacon) {
+                    navigator.sendBeacon(`/webapi/tests/disqualify/${attemptId}`, new Blob([], { type: "text/plain" }));
+                } else {
+                    fetch(`/webapi/tests/disqualify/${attemptId}`, {
+                        method: "POST",
+                        credentials: "same-origin",
+                        keepalive: true,
+                    }).catch(() => {});
+                }
+            } catch (_err) {
+                /* best-effort cleanup when the page is leaving */
+            }
+        },
+        installParticipationAntiCheat() {
+            document.addEventListener("visibilitychange", this.handleParticipationVisibilityChange);
+            window.addEventListener("blur", this.handleParticipationWindowBlur);
+            window.addEventListener("beforeunload", this.handleParticipationBeforeUnload);
+            window.addEventListener("pagehide", this.handleParticipationPageHide);
+        },
         runParticipationTimerLoop() {
             const session = this.testSession;
             if (!session || session.submitted) return;
@@ -807,11 +907,6 @@ createApp({
         async startParticipateInTest(testRow) {
             if (!testRow || this.busy || this.testSession) return;
             if (!this.authenticated) return;
-            if (!this.desktopParticipationAllowed) {
-                this.error =
-                    "Tests can only be taken from the Testing Platform desktop application.";
-                return;
-            }
             const questionsCount = Number(testRow.question_count ?? 0);
             if (questionsCount < 1) {
                 this.error = "This test has no questions yet.";
@@ -838,6 +933,12 @@ createApp({
                     currentIndex: 0,
                     answers: {},
                     timerHandle: null,
+                    antiCheatWarnings: 0,
+                    maxWarnings: 5,
+                    lastViolationReason: "",
+                    lastViolationAt: 0,
+                    antiCheatSuppressed: false,
+                    disqualifying: false,
                 };
                 if (this.me && Number.isFinite(Number(data.remaining_credits))) {
                     this.me.credits = Number(data.remaining_credits);
@@ -853,15 +954,18 @@ createApp({
         async submitParticipationTest(forced = false) {
             const session = this.testSession;
             if (!session || session.submitted || this.busy) return;
-            if (!this.desktopParticipationAllowed) {
-                this.error =
-                    "Tests can only be taken from the Testing Platform desktop application.";
-                return;
-            }
             if (!forced) {
-                const confirmed = window.confirm(
-                    "Submit all answers now? Any question without a selection counts as incorrect.",
-                );
+                session.antiCheatSuppressed = true;
+                let confirmed = false;
+                try {
+                    confirmed = window.confirm(
+                        "Submit all answers now? Any question without a selection counts as incorrect.",
+                    );
+                } finally {
+                    window.setTimeout(() => {
+                        if (session && !session.submitted) session.antiCheatSuppressed = false;
+                    }, 500);
+                }
                 if (!confirmed) return;
             }
             const attemptId = session.attemptId;
@@ -900,6 +1004,30 @@ createApp({
                 ) {
                     this.startParticipationTimer();
                 }
+            } finally {
+                this.busy = false;
+            }
+        },
+        async disqualifyParticipationTest(reason = "Anti-cheat warning limit reached.") {
+            const session = this.testSession;
+            if (!session || session.submitted || session.disqualifying) return;
+            const attemptId = Number(session.attemptId || 0);
+            if (!attemptId) return;
+            session.disqualifying = true;
+            this.busy = true;
+            this.stopParticipationTimer();
+            try {
+                const data = await this.request("POST", `/webapi/tests/disqualify/${attemptId}`, null);
+                session.submitted = true;
+                this.error = `Disqualified: ${reason}`;
+                if (this.me && Number.isFinite(Number(data.remaining_credits))) {
+                    this.me.credits = Number(data.remaining_credits);
+                }
+                this.clearParticipationSession();
+                await this.loadDashboard({ silent: true });
+            } catch (error) {
+                this.error = error.message;
+                session.disqualifying = false;
             } finally {
                 this.busy = false;
             }
@@ -1008,6 +1136,7 @@ createApp({
                 name: "",
                 select_count: 1,
                 points_per_question: 1,
+                requires_full_score: false,
             };
         },
         resetAdminTestForm() {
@@ -1288,6 +1417,8 @@ createApp({
                       name: String(section.name || ""),
                       select_count: Number(section.select_count || 1),
                       points_per_question: Number(section.points_per_question || 1),
+                      order_index: Number(section.order_index || 0),
+                      requires_full_score: Boolean(section.requires_full_score),
                   }
                 : this.admin.sectionForm;
             if (!form.test_config_id) {
@@ -1307,6 +1438,7 @@ createApp({
                 name: String(form.name).trim(),
                 select_count: Number(form.select_count),
                 points_per_question: Number(form.points_per_question),
+                requires_full_score: Boolean(form.requires_full_score),
             };
             this.busy = true;
             try {
@@ -1315,6 +1447,7 @@ createApp({
                         name: payload.name,
                         select_count: payload.select_count,
                         points_per_question: payload.points_per_question,
+                        requires_full_score: payload.requires_full_score,
                     });
                     this.success = "Section updated.";
                 } else {
@@ -1325,6 +1458,44 @@ createApp({
                 await this.loadAdmin();
             } catch (error) {
                 this.error = error.message;
+            } finally {
+                this.busy = false;
+            }
+        },
+        adminSectionDragStart(section) {
+            this.admin.draggingSectionId = Number(section?.id || 0);
+        },
+        adminSectionDragEnd() {
+            this.admin.draggingSectionId = 0;
+        },
+        async dropAdminSection(targetSection) {
+            const draggedId = Number(this.admin.draggingSectionId || 0);
+            const targetId = Number(targetSection?.id || 0);
+            if (!draggedId || !targetId || draggedId === targetId || this.busy) return;
+            const sections = this.activeAdminTestSections;
+            const fromIndex = sections.findIndex((section) => Number(section.id) === draggedId);
+            const toIndex = sections.findIndex((section) => Number(section.id) === targetId);
+            if (fromIndex < 0 || toIndex < 0) return;
+            const [moved] = sections.splice(fromIndex, 1);
+            sections.splice(toIndex, 0, moved);
+            const orderIds = sections.map((section) => Number(section.id));
+            const orderMap = new Map(orderIds.map((id, index) => [id, index + 1]));
+            this.admin.sections = this.admin.sections.map((section) => {
+                const order = orderMap.get(Number(section.id));
+                return order ? { ...section, order_index: order } : section;
+            });
+            this.admin.draggingSectionId = 0;
+            this.busy = true;
+            try {
+                await this.request(
+                    "PATCH",
+                    `/webapi/admin/test-configs/${this.activeAdminTestConfig.id}/sections/reorder`,
+                    { section_ids: orderIds },
+                );
+                await this.loadAdmin({ silent: true });
+            } catch (error) {
+                this.error = error.message;
+                await this.loadAdmin({ silent: true });
             } finally {
                 this.busy = false;
             }
@@ -1685,6 +1856,7 @@ createApp({
                 this.busy = true;
             }
             try {
+                this.profileLoading = true;
                 this.profile = await this.request("GET", "/webapi/profile");
                 this.profileIsPublic = false;
                 this.profilePublicRole = "";
@@ -1697,6 +1869,7 @@ createApp({
                     this.error = error.message;
                 }
             } finally {
+                this.profileLoading = false;
                 if (!silent) {
                     this.busy = false;
                 }
@@ -1708,6 +1881,11 @@ createApp({
                 this.clearNotices();
                 this.busy = true;
             }
+            this.profileLoading = true;
+            this.profileIsPublic = true;
+            this.profilePublicRole = "";
+            this.profileTargetUserId = Number(userId || 0);
+            this.profile = this.emptyProfilePayload(userId);
             try {
                 const data = await this.request("GET", `/webapi/community/users/${userId}/profile`);
                 this.profile = {
@@ -1733,6 +1911,7 @@ createApp({
                     this.error = error.message;
                 }
             } finally {
+                this.profileLoading = false;
                 if (!silent) {
                     this.busy = false;
                 }
@@ -1983,6 +2162,7 @@ createApp({
         },
     },
     async mounted() {
+        this.installParticipationAntiCheat();
         window.addEventListener("popstate", async () => {
             const target = this.pathToView(window.location.pathname);
             await this.setView(target, true);

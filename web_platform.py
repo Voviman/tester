@@ -86,12 +86,18 @@ class SectionCreateIn(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     select_count: int = Field(ge=1)
     points_per_question: int = Field(ge=1, le=100)
+    requires_full_score: bool = False
 
 
 class SectionUpdateIn(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     select_count: int = Field(ge=1)
     points_per_question: int = Field(ge=1, le=100)
+    requires_full_score: bool = False
+
+
+class SectionReorderIn(BaseModel):
+    section_ids: list[int] = Field(min_length=1)
 
 
 class TestBuilderIn(BaseModel):
@@ -351,16 +357,20 @@ class TestSubmitAnswersIn(BaseModel):
 
 @app.post("/webapi/tests/start/{test_config_id}")
 def webapi_tests_start(request: Request, test_config_id: int):
-    check_desktop_test_participation(request)
     token = require_token(request)
     return api_request(token, "POST", f"/tests/start/{test_config_id}")
 
 
 @app.post("/webapi/tests/submit/{attempt_id}")
 def webapi_tests_submit(request: Request, attempt_id: int, payload: TestSubmitAnswersIn):
-    check_desktop_test_participation(request)
     token = require_token(request)
     return api_request(token, "POST", f"/tests/submit/{attempt_id}", json=payload.model_dump())
+
+
+@app.post("/webapi/tests/disqualify/{attempt_id}")
+def webapi_tests_disqualify(request: Request, attempt_id: int):
+    token = require_token(request)
+    return api_request(token, "POST", f"/tests/disqualify/{attempt_id}")
 
 
 @app.get("/webapi/community/users/{user_id}/profile")
@@ -462,6 +472,7 @@ def webapi_admin_create_section(request: Request, payload: SectionCreateIn):
             "name": payload.name.strip(),
             "select_count": payload.select_count,
             "points_per_question": payload.points_per_question,
+            "requires_full_score": payload.requires_full_score,
         },
     )
 
@@ -477,7 +488,19 @@ def webapi_admin_update_section(request: Request, section_id: int, payload: Sect
             "name": payload.name.strip(),
             "select_count": payload.select_count,
             "points_per_question": payload.points_per_question,
+            "requires_full_score": payload.requires_full_score,
         },
+    )
+
+
+@app.patch("/webapi/admin/test-configs/{test_config_id}/sections/reorder")
+def webapi_admin_reorder_sections(request: Request, test_config_id: int, payload: SectionReorderIn):
+    token = require_token(request)
+    return api_request(
+        token,
+        "PATCH",
+        f"/admin/test-configs/{test_config_id}/sections/reorder",
+        json={"section_ids": [int(item) for item in payload.section_ids]},
     )
 
 
