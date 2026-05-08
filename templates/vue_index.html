@@ -415,65 +415,13 @@
                         </template>
 
                         <article v-else class="panel">
-                            <div class="section-head admin-test-head">
-                                <h2>User Manager</h2>
-                                <div class="admin-test-menu">
-                                    <button
-                                        class="btn small"
-                                        :class="admin.userFormMode === 'create' ? 'primary' : 'secondary'"
-                                        @click="openCreateUserMode"
-                                        :disabled="busy"
-                                    >Create User</button>
-                                    <button
-                                        class="btn small"
-                                        :class="admin.userFormMode === 'update' ? 'primary' : 'secondary'"
-                                        @click="openUpdateUserMode"
-                                        :disabled="busy || !activeAdminUser"
-                                    >Edit User</button>
-                                </div>
+                            <h2>User Manager</h2>
+                            <div v-if="activeAdminUser" class="small muted">
+                                Selected: #{{ activeAdminUser.id }} {{ activeAdminUser.username }} ({{ activeAdminUser.role }})
                             </div>
-
-                            <div v-if="admin.userFormMode === 'create'" class="form-grid admin-user-form">
-                                <input v-model.trim="admin.createUser.username" placeholder="Username">
-                                <input v-model.trim="admin.createUser.email" placeholder="Email">
-                                <input v-model="admin.createUser.password" type="password" placeholder="Password">
-                                <select v-model="admin.createUser.role">
-                                    <option value="user">user</option>
-                                    <option v-if="me.role === 'super_admin'" value="admin">admin</option>
-                                </select>
-                                <input v-model.number="admin.createUser.credits" type="number" min="0" placeholder="Starting credits">
-                                <button class="btn primary" @click="createUser" :disabled="busy">Create User</button>
-                            </div>
-
-                            <div v-else>
-                                <div v-if="!activeAdminUser" class="empty small">Select a user to edit.</div>
-                                <div v-else-if="admin.selectedUserStats" class="form-grid admin-user-form">
-                                    <div class="small muted">
-                                        Editing #{{ admin.selectedUserStats.user.id }} {{ admin.selectedUserStats.user.username }}
-                                    </div>
-                                    <input v-model.trim="admin.editUser.username" placeholder="Username">
-                                    <input v-model.trim="admin.editUser.email" placeholder="Email">
-                                    <select v-model="admin.editUser.role" :disabled="admin.selectedUserStats.user.role === 'super_admin'">
-                                        <option value="user">user</option>
-                                        <option v-if="me.role === 'super_admin'" value="admin">admin</option>
-                                    </select>
-                                    <input v-model.number="admin.editUser.credits" type="number" min="0" placeholder="Total credits">
-                                    <select v-model="admin.editUser.is_active">
-                                        <option :value="true">active</option>
-                                        <option :value="false">inactive</option>
-                                    </select>
-                                    <input v-model="admin.editUser.password" type="password" placeholder="New password (optional)">
-                                    <button class="btn primary" @click="saveUser" :disabled="busy">Save User</button>
-                                    <div class="credits-row">
-                                        <input v-model.number="admin.editUser.credits_to_add" type="number" min="1" placeholder="Credits to add">
-                                        <button class="btn secondary" @click="addCredits" :disabled="busy">Add Credits</button>
-                                    </div>
-                                    <div class="small muted">
-                                        Tests: {{ admin.selectedUserStats.tests_done }} |
-                                        Success: {{ Number(admin.selectedUserStats.success_rate_percent).toFixed(2) }}%
-                                    </div>
-                                </div>
-                            </div>
+                            <p class="muted small">
+                                Use the create, edit, and delete action buttons in the left panel to manage users.
+                            </p>
                         </article>
                     </div>
 
@@ -576,6 +524,66 @@
                                         {{ adminTestSubmitLabel }}
                                     </button>
                                 </div>
+                            </div>
+                        </article>
+                    </div>
+
+                    <div v-if="admin.userModalOpen" class="admin-modal-backdrop" @click.self="closeUserModal">
+                        <article class="admin-modal">
+                            <div class="section-head admin-modal-head">
+                                <h3>{{ admin.userFormMode === 'update' ? 'Edit User' : 'Create User' }}</h3>
+                                <button class="admin-close-btn" type="button" @click="closeUserModal" aria-label="Close">
+                                    <i class="bi bi-x-lg" aria-hidden="true"></i>
+                                </button>
+                            </div>
+
+                            <div v-if="admin.userFormMode === 'create'" class="form-grid admin-user-form">
+                                <input v-model.trim="admin.createUser.username" placeholder="Username">
+                                <input v-model.trim="admin.createUser.email" type="email" placeholder="Email">
+                                <input v-model="admin.createUser.password" type="password" placeholder="Password">
+                                <select v-model="admin.createUser.role">
+                                    <option value="user">user</option>
+                                    <option v-if="me.role === 'super_admin'" value="admin">admin</option>
+                                </select>
+                                <input v-model.number="admin.createUser.credits" type="number" min="0" placeholder="Starting credits">
+                                <div class="admin-modal-actions">
+                                    <button class="btn secondary" type="button" @click="closeUserModal" :disabled="busy">Cancel</button>
+                                    <button class="btn primary" type="button" @click="createUser" :disabled="busy">Create User</button>
+                                </div>
+                            </div>
+
+                            <div v-else class="form-grid admin-user-form">
+                                <div v-if="!activeAdminUser" class="empty small">Select a user to edit.</div>
+                                <template v-else-if="admin.selectedUserStats">
+                                    <div class="small muted">
+                                        Editing #{{ admin.selectedUserStats.user.id }} {{ admin.selectedUserStats.user.username }}
+                                    </div>
+                                    <input v-model.trim="admin.editUser.username" placeholder="Username">
+                                    <input v-model.trim="admin.editUser.email" type="email" placeholder="Email">
+                                    <select v-model="admin.editUser.role" :disabled="admin.selectedUserStats.user.role === 'super_admin'">
+                                        <option value="user">user</option>
+                                        <option v-if="me.role === 'super_admin'" value="admin">admin</option>
+                                    </select>
+                                    <input v-model.number="admin.editUser.credits" type="number" min="0" placeholder="Total credits">
+                                    <select v-model="admin.editUser.is_active">
+                                        <option :value="true">active</option>
+                                        <option :value="false">inactive</option>
+                                    </select>
+                                    <input v-model="admin.editUser.password" type="password" placeholder="New password (optional)">
+                                    <div class="credits-row">
+                                        <input v-model.number="admin.editUser.credits_to_add" type="number" min="1" placeholder="Credits to add">
+                                        <button class="btn secondary" type="button" @click="addCredits" :disabled="busy">Add Credits</button>
+                                    </div>
+                                    <div class="small muted">
+                                        Tests: {{ admin.selectedUserStats.tests_done }} |
+                                        Success: {{ Number(admin.selectedUserStats.success_rate_percent).toFixed(2) }}%
+                                    </div>
+                                    <div class="admin-modal-actions">
+                                        <button class="btn secondary" type="button" @click="closeUserModal" :disabled="busy">Cancel</button>
+                                        <button class="btn primary" type="button" @click="saveUser" :disabled="busy">Save User</button>
+                                    </div>
+                                </template>
+                                <div v-else class="empty small">Loading user details...</div>
                             </div>
                         </article>
                     </div>

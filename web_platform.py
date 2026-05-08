@@ -1,4 +1,5 @@
 import os
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import requests
@@ -134,6 +135,32 @@ def api_request(
     raise HTTPException(status_code=response.status_code, detail=detail)
 
 
+def api_get_many(
+    token: str,
+    paths_by_key: dict[str, str],
+    *,
+    optional_keys: set[str] | None = None,
+):
+    optional = optional_keys or set()
+    results: dict[str, Any] = {}
+    max_workers = max(1, len(paths_by_key))
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            key: executor.submit(api_request, token, "GET", path)
+            for key, path in paths_by_key.items()
+        }
+        for key, future in futures.items():
+            try:
+                results[key] = future.result()
+            except HTTPException:
+                if key in optional:
+                    results[key] = []
+                else:
+                    raise
+    return results
+
+
 def require_admin(request: Request):
     token = require_token(request)
     me = api_request(token, "GET", "/auth/me")
@@ -217,9 +244,17 @@ def webapi_session(request: Request):
 @app.get("/webapi/dashboard")
 def webapi_dashboard(request: Request):
     token = require_token(request)
-    profile = api_request(token, "GET", "/profile/me")
-    social = api_request(token, "GET", "/social/dashboard")
-    comments = api_request(token, "GET", "/social/comments")
+    data = api_get_many(
+        token,
+        {
+            "profile": "/profile/me",
+            "social": "/social/dashboard",
+            "comments": "/social/comments",
+        },
+    )
+    profile = data["profile"]
+    social = data["social"]
+    comments = data["comments"]
 
     comments_by_test: dict[int, list[dict[str, Any]]] = {}
     for item in comments:
@@ -237,9 +272,17 @@ def webapi_dashboard(request: Request):
 @app.get("/webapi/profile")
 def webapi_profile(request: Request):
     token = require_token(request)
-    profile = api_request(token, "GET", "/profile/me")
-    social = api_request(token, "GET", "/social/dashboard")
-    me = api_request(token, "GET", "/auth/me")
+    data = api_get_many(
+        token,
+        {
+            "profile": "/profile/me",
+            "social": "/social/dashboard",
+            "me": "/auth/me",
+        },
+    )
+    profile = data["profile"]
+    social = data["social"]
+    me = data["me"]
     my_results = [item for item in social.get("recent_results", []) if int(item.get("user_id", 0)) == int(me["id"])]
     return {"profile": profile, "my_results": my_results}
 
@@ -268,12 +311,18 @@ def webapi_unfollow(request: Request, target_user_id: int):
 @app.get("/webapi/admin/overview")
 def webapi_admin_overview(request: Request):
     token, _ = require_admin(request)
-    users = api_request(token, "GET", "/admin/users")
-    test_configs = api_request(token, "GET", "/admin/test-configs")
-    try:
-        questions = api_request(token, "GET", "/admin/questions")
-    except HTTPException:
-        questions = []
+    data = api_get_many(
+        token,
+        {
+            "users": "/admin/users",
+            "test_configs": "/admin/test-configs",
+            "questions": "/admin/questions",
+        },
+        optional_keys={"questions"},
+    )
+    users = data["users"]
+    test_configs = data["test_configs"]
+    questions = data["questions"]
     return {"users": users, "test_configs": test_configs, "questions": questions}
 
 

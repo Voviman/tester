@@ -17,6 +17,22 @@ createApp({
             userSearchQuery: "",
             commentDrafts: {},
             commentVisibleCounts: {},
+            preloadTtlMs: 45_000,
+            preloadStatus: {
+                dashboard: false,
+                profile: false,
+                admin: false,
+            },
+            preloadBusy: {
+                dashboard: false,
+                profile: false,
+                admin: false,
+            },
+            preloadFetchedAt: {
+                dashboard: 0,
+                profile: 0,
+                admin: 0,
+            },
             dashboard: {
                 profile: {
                     user: { credits: 0 },
@@ -51,6 +67,7 @@ createApp({
                 selectedTestConfigId: 0,
                 selectedUserId: 0,
                 selectedUserStats: null,
+                selectedUserStatsFetchedAt: 0,
                 createUser: {
                     username: "",
                     email: "",
@@ -69,6 +86,7 @@ createApp({
                 },
                 testFormMode: "create",
                 userFormMode: "create",
+                userModalOpen: false,
                 testModalOpen: false,
                 testForm: {
                     id: 0,
@@ -179,6 +197,62 @@ createApp({
         clearNotices() {
             this.error = "";
             this.success = "";
+        },
+        resetPreloadState() {
+            this.preloadStatus.dashboard = false;
+            this.preloadStatus.profile = false;
+            this.preloadStatus.admin = false;
+            this.preloadBusy.dashboard = false;
+            this.preloadBusy.profile = false;
+            this.preloadBusy.admin = false;
+            this.preloadFetchedAt.dashboard = 0;
+            this.preloadFetchedAt.profile = 0;
+            this.preloadFetchedAt.admin = 0;
+            this.admin.selectedUserStatsFetchedAt = 0;
+        },
+        isViewDataStale(view) {
+            if (!this.preloadStatus[view]) return true;
+            const fetchedAt = Number(this.preloadFetchedAt[view] || 0);
+            if (!fetchedAt) return true;
+            return Date.now() - fetchedAt > this.preloadTtlMs;
+        },
+        markViewDataFresh(view) {
+            this.preloadStatus[view] = true;
+            this.preloadFetchedAt[view] = Date.now();
+        },
+        async loadViewData(view, options = {}) {
+            if (view === "profile") {
+                await this.loadProfile(options);
+                return;
+            }
+            if (view === "admin") {
+                await this.loadAdmin(options);
+                return;
+            }
+            await this.loadDashboard(options);
+        },
+        async preloadViewData(view, options = {}) {
+            const { force = false } = options;
+            if (!this.authenticated) return;
+            if (view === "admin" && !this.isAdmin) return;
+            if (this.preloadBusy[view]) return;
+            if (!force && !this.isViewDataStale(view)) return;
+
+            this.preloadBusy[view] = true;
+            try {
+                await this.loadViewData(view, { silent: true });
+            } finally {
+                this.preloadBusy[view] = false;
+            }
+        },
+        preloadInactiveViews() {
+            if (!this.authenticated) return;
+            const viewsToPreload = ["dashboard", "profile"];
+            if (this.isAdmin) viewsToPreload.push("admin");
+            for (const nextView of viewsToPreload) {
+                if (nextView === this.view) continue;
+                this.preloadViewData(nextView).catch(() => {});
+            }
         },
         formatDate(value) {
             if (!value) return "-";
@@ -300,6 +374,7 @@ createApp({
                 role: "user",
                 credits: 0,
             };
+            this.admin.userModalOpen = true;
         },
         async openUpdateUserMode() {
             const target = this.activeAdminUser;
@@ -308,7 +383,12 @@ createApp({
                 return;
             }
             this.admin.userFormMode = "update";
+            this.admin.userModalOpen = true;
             await this.selectAdminUser(target.id);
+        },
+        closeUserModal() {
+            this.admin.userModalOpen = false;
+            this.admin.userFormMode = "create";
         },
         prepareEditTest(config) {
             this.admin.testFormMode = "update";
@@ -594,6 +674,35 @@ createApp({
                 this.busy = false;
             }
         },
+        extractErrorDetail(data) {
+            const detail = data?.detail;
+            if (Array.isArray(detail)) {
+                const messages = detail
+                    .map((item) => {
+                        if (typeof item === "string") return item;
+                        if (!item || typeof item !== "object") return "";
+                        const locParts = Array.isArray(item.loc)
+                            ? item.loc.filter((part) => part !== "body").map((part) => String(part))
+                            : [];
+                        const location = locParts.join(".");
+                        const message = String(item.msg || "Invalid value.");
+                        return location ? `${location}: ${message}` : message;
+                    })
+                    .filter(Boolean);
+                return messages.join("; ");
+            }
+            if (typeof detail === "string" && detail.trim()) {
+                return detail.trim();
+            }
+            if (detail && typeof detail === "object") {
+                try {
+                    return JSON.stringify(detail);
+                } catch (_err) {
+                    return "Request failed.";
+                }
+            }
+            return "";
+        },
         async request(method, url, payload = null) {
             const options = {
                 method,
@@ -617,7 +726,8 @@ createApp({
                     this.authenticated = false;
                     this.me = null;
                 }
-                throw new Error(data.detail || `Request failed (${response.status})`);
+                const detail = this.extractErrorDetail(data);
+                throw new Error(detail || `Request failed (${response.status})`);
             }
             return data;
         },
@@ -628,6 +738,7 @@ createApp({
                 const session = await this.request("GET", "/webapi/session");
                 this.authenticated = Boolean(session.authenticated);
                 this.me = session.me || null;
+                this.resetPreloadState();
                 this.view = this.pathToView(window.location.pathname);
                 if (this.view === "admin" && !this.isAdmin) this.view = "dashboard";
                 if (this.authenticated) {
@@ -652,15 +763,16 @@ createApp({
         },
         async loadForCurrentView() {
             if (!this.authenticated) return;
-            if (this.view === "profile") {
-                await this.loadProfile();
-                return;
+            const activeView =
+                this.view === "profile" ? "profile" : this.view === "admin" && this.isAdmin ? "admin" : "dashboard";
+
+            if (!this.preloadStatus[activeView]) {
+                await this.loadViewData(activeView);
+            } else if (this.isViewDataStale(activeView)) {
+                this.preloadViewData(activeView, { force: true }).catch(() => {});
             }
-            if (this.view === "admin" && this.isAdmin) {
-                await this.loadAdmin();
-                return;
-            }
-            await this.loadDashboard();
+
+            this.preloadInactiveViews();
         },
         async loginSubmit() {
             this.clearNotices();
@@ -675,6 +787,7 @@ createApp({
                 this.me = data.me;
                 this.login.password = "";
                 this.success = "Welcome back.";
+                this.resetPreloadState();
                 if (this.view === "admin" && !this.isAdmin) this.view = "dashboard";
                 window.history.replaceState({}, "", this.viewToPath(this.view));
                 await this.loadForCurrentView();
@@ -695,11 +808,15 @@ createApp({
             this.me = null;
             this.view = "dashboard";
             this.dashboard.social_dashboard.tests = [];
+            this.resetPreloadState();
             window.history.replaceState({}, "", "/");
         },
-        async loadDashboard() {
-            this.clearNotices();
-            this.busy = true;
+        async loadDashboard(options = {}) {
+            const { silent = false } = options;
+            if (!silent) {
+                this.clearNotices();
+                this.busy = true;
+            }
             try {
                 const data = await this.request("GET", "/webapi/dashboard");
                 this.dashboard = data;
@@ -718,21 +835,38 @@ createApp({
                     }
                     this.commentVisibleCounts[test.id] = Math.max(2, this.commentVisibleCounts[test.id]);
                 }
+                this.markViewDataFresh("dashboard");
             } catch (error) {
-                this.error = error.message;
+                this.preloadStatus.dashboard = false;
+                this.preloadFetchedAt.dashboard = 0;
+                if (!silent) {
+                    this.error = error.message;
+                }
             } finally {
-                this.busy = false;
+                if (!silent) {
+                    this.busy = false;
+                }
             }
         },
-        async loadProfile() {
-            this.clearNotices();
-            this.busy = true;
+        async loadProfile(options = {}) {
+            const { silent = false } = options;
+            if (!silent) {
+                this.clearNotices();
+                this.busy = true;
+            }
             try {
                 this.profile = await this.request("GET", "/webapi/profile");
+                this.markViewDataFresh("profile");
             } catch (error) {
-                this.error = error.message;
+                this.preloadStatus.profile = false;
+                this.preloadFetchedAt.profile = 0;
+                if (!silent) {
+                    this.error = error.message;
+                }
             } finally {
-                this.busy = false;
+                if (!silent) {
+                    this.busy = false;
+                }
             }
         },
         async postComment(testConfigId) {
@@ -772,9 +906,12 @@ createApp({
                 this.busy = false;
             }
         },
-        async loadAdmin() {
-            this.clearNotices();
-            this.busy = true;
+        async loadAdmin(options = {}) {
+            const { silent = false } = options;
+            if (!silent) {
+                this.clearNotices();
+                this.busy = true;
+            }
             try {
                 const data = await this.request("GET", "/webapi/admin/overview");
                 this.admin.users = data.users || [];
@@ -807,23 +944,59 @@ createApp({
                 if (!availableUserIds.has(Number(this.admin.selectedUserId))) {
                     this.admin.selectedUserId = this.admin.users.length ? this.admin.users[0].id : 0;
                     this.admin.selectedUserStats = null;
+                    this.admin.selectedUserStatsFetchedAt = 0;
+                }
+                this.markViewDataFresh("admin");
+                if (this.admin.selectedUserId && this.isSelectedUserStatsStale(this.admin.selectedUserId)) {
+                    this.preloadSelectedUserStats();
                 }
             } catch (error) {
-                this.error = error.message;
+                this.preloadStatus.admin = false;
+                this.preloadFetchedAt.admin = 0;
+                if (!silent) {
+                    this.error = error.message;
+                }
             } finally {
-                this.busy = false;
+                if (!silent) {
+                    this.busy = false;
+                }
             }
         },
         async createUser() {
             this.clearNotices();
             const form = this.admin.createUser;
-            if (!form.username || !form.email || !form.password) {
+            const username = String(form.username || "").trim();
+            const email = String(form.email || "").trim();
+            const password = String(form.password || "");
+            const role = this.me?.role === "super_admin" && form.role === "admin" ? "admin" : "user";
+            const creditsInput = form.credits === "" || form.credits === null || typeof form.credits === "undefined" ? 0 : form.credits;
+            const credits = Number(creditsInput);
+
+            if (!username || !email || !password) {
                 this.error = "Username, email and password are required.";
+                return;
+            }
+            if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+                this.error = "Enter a valid email address.";
+                return;
+            }
+            if (password.length < 8) {
+                this.error = "Password must be at least 8 characters.";
+                return;
+            }
+            if (!Number.isInteger(credits) || credits < 0) {
+                this.error = "Starting credits must be a whole number greater than or equal to 0.";
                 return;
             }
             this.busy = true;
             try {
-                await this.request("POST", "/webapi/admin/users", form);
+                await this.request("POST", "/webapi/admin/users", {
+                    username,
+                    email,
+                    password,
+                    role,
+                    credits,
+                });
                 this.success = "User created successfully.";
                 this.admin.createUser = {
                     username: "",
@@ -833,31 +1006,63 @@ createApp({
                     credits: 0,
                 };
                 await this.loadAdmin();
+                this.closeUserModal();
             } catch (error) {
                 this.error = error.message;
             } finally {
                 this.busy = false;
             }
         },
-        async selectUser() {
+        applySelectedUserStats(data) {
+            this.admin.selectedUserStats = data;
+            this.admin.selectedUserStatsFetchedAt = Date.now();
+            this.admin.editUser = {
+                username: data.user.username,
+                email: data.user.email,
+                role: data.user.role,
+                credits: data.user.credits,
+                is_active: data.user.is_active,
+                password: "",
+                credits_to_add: 1,
+            };
+        },
+        isSelectedUserStatsStale(userId) {
+            const targetUserId = Number(userId || this.admin.selectedUserId);
+            if (!targetUserId) return true;
+            const loadedUserId = Number(this.admin.selectedUserStats?.user?.id || 0);
+            if (loadedUserId !== targetUserId) return true;
+            const fetchedAt = Number(this.admin.selectedUserStatsFetchedAt || 0);
+            if (!fetchedAt) return true;
+            return Date.now() - fetchedAt > this.preloadTtlMs;
+        },
+        async preloadSelectedUserStats() {
+            const targetUserId = Number(this.admin.selectedUserId);
+            if (!targetUserId) return;
+            if (!this.isSelectedUserStatsStale(targetUserId)) return;
+            try {
+                const data = await this.request("GET", `/webapi/admin/users/${targetUserId}/stats`);
+                if (Number(this.admin.selectedUserId) === targetUserId) {
+                    this.applySelectedUserStats(data);
+                }
+            } catch (_error) {
+                // Ignore preload errors and keep explicit edit flow as fallback.
+            }
+        },
+        async selectUser(options = {}) {
+            const { force = false } = options;
             if (!this.admin.selectedUserId) {
                 this.admin.selectedUserStats = null;
+                this.admin.selectedUserStatsFetchedAt = 0;
+                return;
+            }
+            if (!force && !this.isSelectedUserStatsStale(this.admin.selectedUserId)) {
                 return;
             }
             this.clearNotices();
             this.busy = true;
             try {
                 const data = await this.request("GET", `/webapi/admin/users/${this.admin.selectedUserId}/stats`);
-                this.admin.selectedUserStats = data;
-                this.admin.editUser = {
-                    username: data.user.username,
-                    email: data.user.email,
-                    role: data.user.role,
-                    credits: data.user.credits,
-                    is_active: data.user.is_active,
-                    password: "",
-                    credits_to_add: 1,
-                };
+                this.applySelectedUserStats(data);
             } catch (error) {
                 this.error = error.message;
             } finally {
@@ -878,7 +1083,7 @@ createApp({
                 await this.request("PATCH", `/webapi/admin/users/${this.admin.selectedUserId}`, payload);
                 this.success = "User updated.";
                 await this.loadAdmin();
-                await this.selectUser();
+                this.closeUserModal();
             } catch (error) {
                 this.error = error.message;
             } finally {
@@ -895,7 +1100,7 @@ createApp({
                 });
                 this.success = "Credits added.";
                 await this.loadAdmin();
-                await this.selectUser();
+                await this.selectUser({ force: true });
             } catch (error) {
                 this.error = error.message;
             } finally {
