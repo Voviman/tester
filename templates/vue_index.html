@@ -137,9 +137,9 @@
                         <article class="panel">
                             <h2>Your Snapshot</h2>
                             <div class="quick-stats">
-                                <div><span>Credits</span><strong>{{ dashboard.profile.user.credits }}</strong></div>
-                                <div><span>Tests</span><strong>{{ dashboard.profile.tests_done }}</strong></div>
-                                <div><span>Success</span><strong>{{ Number(dashboard.profile.success_rate_percent).toFixed(2) }}%</strong></div>
+                                <div><span>Credits</span><strong>{{ Number(dashboard.profile.user?.credits ?? 0) }}</strong></div>
+                                <div><span>Tests</span><strong>{{ Number(dashboard.profile.tests_done ?? 0) }}</strong></div>
+                                <div><span>Success</span><strong>{{ Number(dashboard.profile.success_rate_percent ?? 0).toFixed(2) }}%</strong></div>
                             </div>
                         </article>
 
@@ -147,14 +147,35 @@
                             <h2>Recent Results Feed</h2>
                             <div v-if="!dashboard.social_dashboard.recent_results.length" class="empty">No results yet.</div>
                             <div v-else class="feed-scroll">
-                                <div v-for="item in dashboard.social_dashboard.recent_results" :key="item.attempt_id" class="feed-row">
+                                <div
+                                    v-for="item in dashboard.social_dashboard.recent_results"
+                                    :key="item.attempt_id"
+                                    class="feed-row feed-row-clickable"
+                                    role="button"
+                                    :tabindex="busy ? -1 : 0"
+                                    :aria-disabled="busy"
+                                    :aria-label="'View profile for ' + item.username"
+                                    @click="openRecentResultProfile(item)"
+                                    @keydown.enter.prevent="openRecentResultProfile(item)"
+                                    @keydown.space.prevent="openRecentResultProfile(item)"
+                                >
                                     <div class="feed-head">
                                         <div class="avatar avatar-sm" :style="avatarStyle(item.username)" aria-hidden="true">
                                             {{ userInitials(item.username) }}
                                         </div>
-                                        <div>
-                                            <strong>{{ item.username }}</strong> completed
-                                            <strong>{{ item.topic_name }} - {{ item.level_name }}</strong>
+                                        <div class="feed-head-text">
+                                            <div class="feed-user-line">
+                                                <strong>{{ item.username }}</strong>
+                                                <span
+                                                    v-if="isRecentResultAdmin(item)"
+                                                    class="admin-role-badge"
+                                                    aria-hidden="true"
+                                                    title="Admin"
+                                                >
+                                                    <i class="bi bi-patch-check-fill icon"></i>
+                                                </span>
+                                            </div>
+                                            <span>completed <strong>{{ item.topic_name }} - {{ item.level_name }}</strong></span>
                                         </div>
                                     </div>
                                     <div class="muted small feed-meta">
@@ -180,24 +201,30 @@
                             <div v-if="!dashboard.social_dashboard.active_users.length" class="empty">No active users.</div>
                             <div v-else-if="!filteredActiveUsers.length" class="empty">No users match your search.</div>
                             <div v-for="user in filteredActiveUsers" :key="user.id" class="user-row">
-                                <div class="user-main">
+                                <div
+                                    class="user-main user-main-clickable"
+                                    role="button"
+                                    :tabindex="busy ? -1 : 0"
+                                    :aria-disabled="busy"
+                                    :aria-label="'View profile for ' + user.username"
+                                    @click="openActiveUserFromList(user)"
+                                    @keydown.enter.prevent="openActiveUserFromList(user)"
+                                    @keydown.space.prevent="openActiveUserFromList(user)"
+                                >
                                     <div class="avatar avatar-sm" :style="avatarStyle(user.username)" aria-hidden="true">
                                         {{ userInitials(user.username) }}
                                     </div>
-                                    <div>
+                                    <div class="user-main-text">
                                         <div class="user-name-row">
                                             <strong>{{ user.username }}</strong>
-                                            <button
+                                            <span
                                                 v-if="isAdminRole(user.role)"
-                                                class="admin-profile-icon-btn"
-                                                type="button"
-                                                @click="openUserProfile(user.id)"
-                                                :disabled="busy"
-                                                aria-label="View admin profile"
-                                                title="View profile"
+                                                class="admin-role-badge"
+                                                aria-hidden="true"
+                                                title="Admin"
                                             >
-                                                <i class="bi bi-patch-check-fill icon" aria-hidden="true"></i>
-                                            </button>
+                                                <i class="bi bi-patch-check-fill icon"></i>
+                                            </span>
                                         </div>
                                         <div class="muted small">
                                             Tests {{ user.tests_done }} | Success {{ Number(user.success_rate_percent).toFixed(2) }}%

@@ -216,6 +216,105 @@ createApp({
             if (!Number.isInteger(targetUserId) || targetUserId <= 0) return;
             await this.setView("profile", false, { profileUserId: targetUserId });
         },
+        async openActiveUserFromList(user) {
+            if (!user || this.busy) return;
+            if (Number(user.id) === Number(this.me?.id)) {
+                await this.setView("profile");
+                return;
+            }
+            await this.openUserProfile(user.id);
+        },
+        async openRecentResultProfile(item) {
+            if (!item || this.busy) return;
+            const uid = Number(item.user_id);
+            if (!Number.isFinite(uid) || uid <= 0) return;
+            if (uid === Number(this.me?.id)) {
+                await this.setView("profile");
+                return;
+            }
+            await this.openUserProfile(uid);
+        },
+        isRecentResultAdmin(item) {
+            if (!item) return false;
+            const fromItem = this.isAdminRole(item.user_role);
+            if (fromItem) return true;
+            const users = this.dashboard?.social_dashboard?.active_users || [];
+            const match = users.find((u) => Number(u.id) === Number(item.user_id));
+            return match ? this.isAdminRole(match.role) : false;
+        },
+        normalizeRole(role) {
+            if (typeof role === "string") return role;
+            if (role && typeof role === "object" && role.value !== undefined) return String(role.value);
+            return "user";
+        },
+        normalizeDashboardPayload(raw) {
+            const payload = raw && typeof raw === "object" ? raw : {};
+            const profileSrc = payload.profile || {};
+            const userSrc = profileSrc.user || {};
+            const socialRaw = payload.social_dashboard || {};
+            const social_dashboard = {
+                tests: Array.isArray(socialRaw.tests)
+                    ? socialRaw.tests.map((t) => ({
+                          ...t,
+                          id: Number(t.id),
+                          duration_seconds: Number(t.duration_seconds ?? 0),
+                          passing_percent: Number(t.passing_percent ?? 0),
+                          question_count: Number(t.question_count ?? 0),
+                      }))
+                    : [],
+                active_users: Array.isArray(socialRaw.active_users)
+                    ? socialRaw.active_users.map((u) => ({
+                          ...u,
+                          id: Number(u.id),
+                          tests_done: Number(u.tests_done ?? 0),
+                          success_rate_percent: Number(u.success_rate_percent ?? 0),
+                          follower_count: Number(u.follower_count ?? 0),
+                          role: this.normalizeRole(u.role),
+                      }))
+                    : [],
+                recent_results: Array.isArray(socialRaw.recent_results)
+                    ? socialRaw.recent_results.map((r) => ({
+                          ...r,
+                          attempt_id: Number(r.attempt_id),
+                          user_id: Number(r.user_id),
+                          user_role:
+                              r.user_role !== undefined && r.user_role !== null
+                                  ? this.normalizeRole(r.user_role)
+                                  : undefined,
+                          score: Number(r.score ?? 0),
+                          total_questions: Number(r.total_questions ?? 0),
+                          success_percent: Number(r.success_percent ?? 0),
+                          passed: Boolean(r.passed),
+                      }))
+                    : [],
+                following_user_ids: Array.isArray(socialRaw.following_user_ids)
+                    ? socialRaw.following_user_ids.map((id) => Number(id)).filter((id) => Number.isFinite(id))
+                    : [],
+            };
+            const profile = {
+                user: {
+                    id: Number(userSrc.id ?? 0),
+                    username: String(userSrc.username ?? ""),
+                    email: String(userSrc.email ?? ""),
+                    credits: Number(userSrc.credits ?? 0),
+                    role: this.normalizeRole(userSrc.role),
+                    is_active: userSrc.is_active !== false,
+                },
+                tests_done: Number(profileSrc.tests_done ?? 0),
+                passed_tests: Number(profileSrc.passed_tests ?? 0),
+                failed_tests: Number(profileSrc.failed_tests ?? 0),
+                success_rate_percent: Number(profileSrc.success_rate_percent ?? 0),
+            };
+            const comments = payload.comments_by_test;
+            const comments_by_test =
+                comments && typeof comments === "object" && !Array.isArray(comments) ? comments : {};
+            return {
+                profile,
+                social_dashboard,
+                comments_by_test,
+                web_test_enabled: Boolean(payload.web_test_enabled),
+            };
+        },
         clearNotices() {
             this.error = "";
             this.success = "";
@@ -877,14 +976,24 @@ createApp({
             }
             try {
                 const data = await this.request("GET", "/webapi/dashboard");
-                this.dashboard = data;
-                const activeTestIds = new Set(data.social_dashboard.tests.map((item) => String(item.id)));
+                const normalized = this.normalizeDashboardPayload(data);
+                this.dashboard = normalized;
+                if (this.me?.id !== undefined && normalized.profile?.user) {
+                    const credits = normalized.profile.user.credits;
+                    if (Number.isFinite(Number(credits))) {
+                        this.me.credits = Number(credits);
+                    }
+                    if (normalized.profile.user.role) {
+                        this.me.role = normalized.profile.user.role;
+                    }
+                }
+                const activeTestIds = new Set(normalized.social_dashboard.tests.map((item) => String(item.id)));
                 for (const testId of Object.keys(this.commentVisibleCounts)) {
                     if (!activeTestIds.has(testId)) {
                         delete this.commentVisibleCounts[testId];
                     }
                 }
-                for (const test of data.social_dashboard.tests) {
+                for (const test of normalized.social_dashboard.tests) {
                     if (!Object.prototype.hasOwnProperty.call(this.commentDrafts, test.id)) {
                         this.commentDrafts[test.id] = "";
                     }

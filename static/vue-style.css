@@ -446,6 +446,36 @@ body {
     padding-top: 0;
 }
 
+.feed-row-clickable {
+    cursor: pointer;
+    border-radius: 6px;
+    margin-left: -4px;
+    margin-right: -4px;
+    padding-left: 4px;
+    padding-right: 4px;
+}
+
+.feed-row-clickable:hover {
+    background: #f8fafc;
+}
+
+.feed-row-clickable:focus-visible {
+    outline: 2px solid #2563eb;
+    outline-offset: 1px;
+}
+
+.feed-head-text {
+    min-width: 0;
+    flex: 1;
+}
+
+.feed-user-line {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
 .section-head {
     display: flex;
     align-items: center;
@@ -484,34 +514,43 @@ body {
     gap: 8px;
 }
 
+.user-main-clickable {
+    flex: 1;
+    min-width: 0;
+    cursor: pointer;
+    text-align: left;
+}
+
+.user-main-clickable:focus-visible {
+    outline: 2px solid #2563eb;
+    outline-offset: 2px;
+}
+
+.user-main-clickable[aria-disabled="true"] {
+    opacity: 0.65;
+    cursor: not-allowed;
+}
+
+.user-main-text {
+    min-width: 0;
+}
+
 .user-name-row {
     display: inline-flex;
     align-items: center;
     gap: 6px;
 }
 
-.admin-profile-icon-btn {
-    width: 24px;
-    height: 24px;
-    border-radius: 999px;
-    border: 1px solid #bfdbfe;
-    background: #eff6ff;
-    color: #1d4ed8;
+.admin-role-badge {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    cursor: pointer;
-    padding: 0;
+    flex-shrink: 0;
 }
 
-.admin-profile-icon-btn:hover:not(:disabled) {
-    border-color: #93c5fd;
-    background: #dbeafe;
-}
-
-.admin-profile-icon-btn:disabled {
-    opacity: 0.55;
-    cursor: not-allowed;
+.admin-role-badge .icon {
+    font-size: 0.95rem;
+    color: #1d4ed8;
 }
 
 .user-actions {

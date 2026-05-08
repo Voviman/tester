@@ -435,6 +435,7 @@ class SocialResultOut(BaseModel):
     attempt_id: int
     user_id: int
     username: str
+    user_role: UserRole | None = None
     topic_name: str
     level_name: str
     score: int
@@ -605,6 +606,7 @@ def build_social_dashboard(db: Session, current_user: User) -> SocialDashboardOu
                 attempt_id=attempt.id,
                 user_id=user.id,
                 username=user.username,
+                user_role=UserRole(user.role),
                 topic_name=config.topic_name,
                 level_name=config.level_name,
                 score=attempt.score,
@@ -713,6 +715,7 @@ def build_social_user_profile(db: Session, target_user: User) -> SocialUserProfi
                 attempt_id=item.id,
                 user_id=target_user.id,
                 username=target_user.username,
+                user_role=UserRole(target_user.role),
                 topic_name=topic_name,
                 level_name=level_name,
                 score=item.score,
