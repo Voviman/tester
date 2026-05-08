@@ -1650,7 +1650,7 @@ def user_submit_test(
     for question in questions:
         _, correct_indices = parse_question_payload(question.options_json, question.correct_index)
         option_order = option_orders.get(question.id)
-        selected_raw = answer_map.get(question.id, -1)
+        selected_raw = answer_map.get(question.id, answer_map.get(str(question.id), -1))
         if isinstance(selected_raw, list):
             selected_indices = sorted({int(item) for item in selected_raw if isinstance(item, int) and item >= 0})
         elif isinstance(selected_raw, int) and selected_raw >= 0:

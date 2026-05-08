@@ -992,7 +992,13 @@ createApp({
             for (const [key, value] of Object.entries(session.answers)) {
                 const qid = Number(key);
                 if (Number.isFinite(qid)) {
-                    answersPayload[String(qid)] = Number(value);
+                    if (Array.isArray(value)) {
+                        answersPayload[String(qid)] = value
+                            .map((item) => Number(item))
+                            .filter((item) => Number.isInteger(item) && item >= 0);
+                    } else {
+                        answersPayload[String(qid)] = Number(value);
+                    }
                 }
             }
             this.busy = true;
