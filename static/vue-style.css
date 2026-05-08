@@ -1710,6 +1710,22 @@ body {
     white-space: nowrap;
 }
 
+.admin-section-type-badge {
+    justify-self: start;
+    min-height: 24px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 10px;
+    border: 1px solid #bfdbfe;
+    border-radius: 8px;
+    background: #eef5ff;
+    color: #1d4ed8;
+    font-size: 12px;
+    font-weight: 800;
+    white-space: nowrap;
+}
+
 .admin-section-actions {
     display: inline-flex;
     align-items: center;

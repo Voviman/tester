@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Testing Platform</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
-    <link rel="stylesheet" href="/static/vue-style.css">
+    <link rel="stylesheet" href="/static/vue-style.css?v=case-scenario-20260508">
     <script>window.PLATFORM_API_URL = {{ api_base_url|tojson }};</script>
 </head>
 <body>
@@ -824,6 +824,12 @@
                                             <label class="admin-section-field section-name-field">
                                                 <span>Section name</span>
                                                 <input v-model.trim="section.name" aria-label="Section name">
+                                                <span
+                                                    v-if="section.section_type === 'case_scenario'"
+                                                    class="admin-section-type-badge"
+                                                >
+                                                    Case-Scenario
+                                                </span>
                                             </label>
                                             <label class="admin-section-field">
                                                 <span>Questions shown</span>
@@ -1206,6 +1212,6 @@
     {% endraw %}
 
     <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
-    <script src="/static/vue-app.js"></script>
+    <script src="/static/vue-app.js?v=case-scenario-20260508"></script>
 </body>
 </html>

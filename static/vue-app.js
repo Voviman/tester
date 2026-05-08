@@ -1121,7 +1121,9 @@ createApp({
             this.admin.sectionForm.test_config_id = Number(testConfigId) || 0;
         },
         normalizeAdminSection(section) {
-            const sectionType = String(section?.section_type || "regular").trim().toLowerCase().replace("-", "_");
+            const rawType = String(section?.section_type || "").trim().toLowerCase().replace("-", "_");
+            const hasScenario = Boolean(String(section?.global_question || "").trim());
+            const sectionType = rawType || (hasScenario ? "case_scenario" : "regular");
             return {
                 ...section,
                 section_type: sectionType === "case_scenario" ? "case_scenario" : "regular",
@@ -1498,8 +1500,9 @@ createApp({
             };
             this.busy = true;
             try {
+                let savedSection = null;
                 if (form.id) {
-                    await this.request("PATCH", `/webapi/admin/test-sections/${form.id}`, {
+                    savedSection = await this.request("PATCH", `/webapi/admin/test-sections/${form.id}`, {
                         name: payload.name,
                         select_count: payload.select_count,
                         points_per_question: payload.points_per_question,
@@ -1509,11 +1512,23 @@ createApp({
                     });
                     this.success = "Section updated.";
                 } else {
-                    await this.request("POST", "/webapi/admin/test-sections", payload);
+                    savedSection = await this.request("POST", "/webapi/admin/test-sections", payload);
                     this.success = "Section added.";
                     this.resetSectionForm();
                 }
                 await this.loadAdmin();
+                if (savedSection?.id) {
+                    const normalizedSaved = this.normalizeAdminSection({
+                        ...savedSection,
+                        section_type: payload.section_type,
+                        global_question: payload.global_question || savedSection.global_question,
+                    });
+                    const savedId = Number(normalizedSaved.id);
+                    const exists = this.admin.sections.some((item) => Number(item.id) === savedId);
+                    this.admin.sections = exists
+                        ? this.admin.sections.map((item) => (Number(item.id) === savedId ? { ...item, ...normalizedSaved } : item))
+                        : [...this.admin.sections, normalizedSaved];
+                }
             } catch (error) {
                 this.error = error.message;
             } finally {

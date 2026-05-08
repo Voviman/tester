@@ -121,6 +121,12 @@ def normalize_section_type(value: str | None) -> str:
     return "regular"
 
 
+def section_type_from_payload(section_type: str | None, global_question: str | None) -> str:
+    if str(global_question or "").strip():
+        return "case_scenario"
+    return normalize_section_type(section_type)
+
+
 def get_token(request: Request) -> str | None:
     return request.cookies.get(COOKIE_NAME)
 
@@ -463,7 +469,7 @@ def webapi_admin_delete_config(request: Request, test_config_id: int):
 @app.post("/webapi/admin/test-sections")
 def webapi_admin_create_section(request: Request, payload: SectionCreateIn):
     token = require_token(request)
-    section_type = normalize_section_type(payload.section_type)
+    section_type = section_type_from_payload(payload.section_type, payload.global_question)
     result = api_request(
         token,
         "POST",
@@ -492,7 +498,7 @@ def webapi_admin_create_section(request: Request, payload: SectionCreateIn):
 @app.patch("/webapi/admin/test-sections/{section_id}")
 def webapi_admin_update_section(request: Request, section_id: int, payload: SectionUpdateIn):
     token = require_token(request)
-    section_type = normalize_section_type(payload.section_type)
+    section_type = section_type_from_payload(payload.section_type, payload.global_question)
     body = {
         "name": payload.name.strip(),
         "select_count": payload.select_count,

@@ -333,6 +333,12 @@ def normalize_section_type(value: str | None) -> str:
     return "regular"
 
 
+def section_type_from_payload(section_type: str | None, global_question: str | None) -> str:
+    if str(global_question or "").strip():
+        return "case_scenario"
+    return normalize_section_type(section_type)
+
+
 def normalize_global_question(section_type: str, value: str | None) -> str | None:
     cleaned = str(value or "").strip()
     if section_type != "case_scenario":
@@ -1332,7 +1338,7 @@ def admin_create_test_section(
     )
     if duplicate is not None:
         raise HTTPException(status_code=409, detail="A section with this name already exists for this test.")
-    section_type = normalize_section_type(payload.section_type)
+    section_type = section_type_from_payload(payload.section_type, payload.global_question)
     global_question = normalize_global_question(section_type, payload.global_question)
     if section_type == "case_scenario" and not global_question:
         raise HTTPException(status_code=400, detail="Global question is required for case-scenario sections.")
@@ -1437,7 +1443,7 @@ def admin_update_test_section(
         section.requires_full_score = payload.requires_full_score
     section_type = normalize_section_type(section.section_type)
     if payload.section_type is not None:
-        section_type = normalize_section_type(payload.section_type)
+        section_type = section_type_from_payload(payload.section_type, payload.global_question)
         section.section_type = section_type
     if "global_question" in payload.model_fields_set or payload.section_type is not None:
         section.global_question = normalize_global_question(section_type, payload.global_question)
