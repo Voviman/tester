@@ -185,7 +185,20 @@
                                         {{ userInitials(user.username) }}
                                     </div>
                                     <div>
-                                        <strong>{{ user.username }}</strong>
+                                        <div class="user-name-row">
+                                            <strong>{{ user.username }}</strong>
+                                            <button
+                                                v-if="isAdminRole(user.role)"
+                                                class="admin-profile-icon-btn"
+                                                type="button"
+                                                @click="openUserProfile(user.id)"
+                                                :disabled="busy"
+                                                aria-label="View admin profile"
+                                                title="View profile"
+                                            >
+                                                <i class="bi bi-patch-check-fill icon" aria-hidden="true"></i>
+                                            </button>
+                                        </div>
                                         <div class="muted small">
                                             Tests {{ user.tests_done }} | Success {{ Number(user.success_rate_percent).toFixed(2) }}%
                                         </div>
@@ -219,11 +232,12 @@
 
                 <section v-else-if="view==='profile'" class="profile-grid">
                     <article class="panel">
-                        <h2>My Profile</h2>
+                        <h2>{{ profileIsPublic ? 'User Profile' : 'My Profile' }}</h2>
                         <div class="profile-details">
                             <div><span>Username</span><strong>{{ profile.profile.user.username }}</strong></div>
-                            <div><span>Email</span><strong>{{ profile.profile.user.email }}</strong></div>
-                            <div><span>Credits</span><strong>{{ profile.profile.user.credits }}</strong></div>
+                            <div v-if="profileIsPublic"><span>Role</span><strong>{{ profilePublicRole || 'user' }}</strong></div>
+                            <div v-if="!profileIsPublic"><span>Email</span><strong>{{ profile.profile.user.email }}</strong></div>
+                            <div v-if="!profileIsPublic"><span>Credits</span><strong>{{ profile.profile.user.credits }}</strong></div>
                             <div><span>Tests done</span><strong>{{ profile.profile.tests_done }}</strong></div>
                             <div><span>Passed</span><strong>{{ profile.profile.passed_tests }}</strong></div>
                             <div><span>Failed</span><strong>{{ profile.profile.failed_tests }}</strong></div>
@@ -231,7 +245,7 @@
                         </div>
                     </article>
                     <article class="panel">
-                        <h2>My Recent Results</h2>
+                        <h2>{{ profileIsPublic ? 'Recent Results' : 'My Recent Results' }}</h2>
                         <div v-if="!profile.my_results.length" class="empty">No recent results yet.</div>
                         <div v-for="item in profile.my_results" :key="item.attempt_id" class="feed-row">
                             <div><strong>{{ item.topic_name }} - {{ item.level_name }}</strong></div>

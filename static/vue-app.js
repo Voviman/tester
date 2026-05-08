@@ -57,6 +57,9 @@ createApp({
                 },
                 my_results: [],
             },
+            profileIsPublic: false,
+            profilePublicRole: "",
+            profileTargetUserId: 0,
             admin: {
                 users: [],
                 test_configs: [],
@@ -189,10 +192,29 @@ createApp({
             if (pathname === "/admin") return "admin";
             return "dashboard";
         },
+        getProfileTargetUserIdFromLocation() {
+            if (window.location.pathname !== "/profile") return 0;
+            const raw = new URLSearchParams(window.location.search).get("user_id");
+            const parsed = Number(raw);
+            return Number.isInteger(parsed) && parsed > 0 ? parsed : 0;
+        },
         viewToPath(view) {
-            if (view === "profile") return "/profile";
+            if (view === "profile") {
+                if (this.profileTargetUserId > 0) {
+                    return `/profile?user_id=${this.profileTargetUserId}`;
+                }
+                return "/profile";
+            }
             if (view === "admin") return "/admin";
             return "/dashboard";
+        },
+        isAdminRole(role) {
+            return role === "admin" || role === "super_admin";
+        },
+        async openUserProfile(userId) {
+            const targetUserId = Number(userId);
+            if (!Number.isInteger(targetUserId) || targetUserId <= 0) return;
+            await this.setView("profile", false, { profileUserId: targetUserId });
         },
         clearNotices() {
             this.error = "";
@@ -741,6 +763,14 @@ createApp({
                 this.resetPreloadState();
                 this.view = this.pathToView(window.location.pathname);
                 if (this.view === "admin" && !this.isAdmin) this.view = "dashboard";
+                if (this.view === "profile") {
+                    this.profileTargetUserId = this.getProfileTargetUserIdFromLocation();
+                    if (Number(this.me?.id || 0) === this.profileTargetUserId) {
+                        this.profileTargetUserId = 0;
+                    }
+                } else {
+                    this.profileTargetUserId = 0;
+                }
                 if (this.authenticated) {
                     await this.loadForCurrentView();
                 }
@@ -750,10 +780,26 @@ createApp({
                 this.booting = false;
             }
         },
-        async setView(view, fromPopState = false) {
+        async setView(view, fromPopState = false, options = {}) {
+            const { profileUserId = null } = options;
             if (view === "admin" && !this.isAdmin) {
                 this.error = "Admin access required.";
                 return;
+            }
+            if (view === "profile") {
+                if (fromPopState) {
+                    this.profileTargetUserId = this.getProfileTargetUserIdFromLocation();
+                } else if (profileUserId !== null) {
+                    const targetUserId = Number(profileUserId);
+                    this.profileTargetUserId = Number.isInteger(targetUserId) && targetUserId > 0 ? targetUserId : 0;
+                } else {
+                    this.profileTargetUserId = 0;
+                }
+                if (Number(this.me?.id || 0) === this.profileTargetUserId) {
+                    this.profileTargetUserId = 0;
+                }
+            } else {
+                this.profileTargetUserId = 0;
             }
             this.view = view;
             if (!fromPopState) {
@@ -763,6 +809,12 @@ createApp({
         },
         async loadForCurrentView() {
             if (!this.authenticated) return;
+            const targetProfileUserId = Number(this.profileTargetUserId || 0);
+            if (this.view === "profile" && targetProfileUserId > 0 && targetProfileUserId !== Number(this.me?.id || 0)) {
+                await this.loadPublicProfile(targetProfileUserId);
+                this.preloadInactiveViews();
+                return;
+            }
             const activeView =
                 this.view === "profile" ? "profile" : this.view === "admin" && this.isAdmin ? "admin" : "dashboard";
 
@@ -789,6 +841,9 @@ createApp({
                 this.success = "Welcome back.";
                 this.resetPreloadState();
                 if (this.view === "admin" && !this.isAdmin) this.view = "dashboard";
+                if (this.view !== "profile") {
+                    this.profileTargetUserId = 0;
+                }
                 window.history.replaceState({}, "", this.viewToPath(this.view));
                 await this.loadForCurrentView();
             } catch (error) {
@@ -807,6 +862,9 @@ createApp({
             this.authenticated = false;
             this.me = null;
             this.view = "dashboard";
+            this.profileTargetUserId = 0;
+            this.profileIsPublic = false;
+            this.profilePublicRole = "";
             this.dashboard.social_dashboard.tests = [];
             this.resetPreloadState();
             window.history.replaceState({}, "", "/");
@@ -856,10 +914,49 @@ createApp({
             }
             try {
                 this.profile = await this.request("GET", "/webapi/profile");
+                this.profileIsPublic = false;
+                this.profilePublicRole = "";
+                this.profileTargetUserId = 0;
                 this.markViewDataFresh("profile");
             } catch (error) {
                 this.preloadStatus.profile = false;
                 this.preloadFetchedAt.profile = 0;
+                if (!silent) {
+                    this.error = error.message;
+                }
+            } finally {
+                if (!silent) {
+                    this.busy = false;
+                }
+            }
+        },
+        async loadPublicProfile(userId, options = {}) {
+            const { silent = false } = options;
+            if (!silent) {
+                this.clearNotices();
+                this.busy = true;
+            }
+            try {
+                const data = await this.request("GET", `/webapi/community/users/${userId}/profile`);
+                this.profile = {
+                    profile: {
+                        user: {
+                            id: Number(data.user?.id || userId),
+                            username: String(data.user?.username || ""),
+                            email: "",
+                            credits: 0,
+                        },
+                        tests_done: Number(data.tests_done || 0),
+                        passed_tests: Number(data.passed_tests || 0),
+                        failed_tests: Number(data.failed_tests || 0),
+                        success_rate_percent: Number(data.success_rate_percent || 0),
+                    },
+                    my_results: Array.isArray(data.recent_results) ? data.recent_results : [],
+                };
+                this.profileIsPublic = true;
+                this.profilePublicRole = String(data.user?.role || "");
+                this.profileTargetUserId = Number(data.user?.id || userId);
+            } catch (error) {
                 if (!silent) {
                     this.error = error.message;
                 }

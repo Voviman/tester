@@ -484,6 +484,36 @@ body {
     gap: 8px;
 }
 
+.user-name-row {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.admin-profile-icon-btn {
+    width: 24px;
+    height: 24px;
+    border-radius: 999px;
+    border: 1px solid #bfdbfe;
+    background: #eff6ff;
+    color: #1d4ed8;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    padding: 0;
+}
+
+.admin-profile-icon-btn:hover:not(:disabled) {
+    border-color: #93c5fd;
+    background: #dbeafe;
+}
+
+.admin-profile-icon-btn:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
 .user-actions {
     display: flex;
     align-items: center;

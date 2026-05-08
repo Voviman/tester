@@ -308,6 +308,12 @@ def webapi_unfollow(request: Request, target_user_id: int):
     return api_request(token, "DELETE", f"/social/follow/{target_user_id}")
 
 
+@app.get("/webapi/community/users/{user_id}/profile")
+def webapi_community_user_profile(request: Request, user_id: int):
+    token = require_token(request)
+    return api_request(token, "GET", f"/social/users/{user_id}/profile")
+
+
 @app.get("/webapi/admin/overview")
 def webapi_admin_overview(request: Request):
     token, _ = require_admin(request)

@@ -425,6 +425,7 @@ class SocialCommentOut(BaseModel):
 class SocialActiveUserOut(BaseModel):
     id: int
     username: str
+    role: UserRole
     tests_done: int
     success_rate_percent: float
     follower_count: int
@@ -448,6 +449,21 @@ class SocialDashboardOut(BaseModel):
     active_users: list[SocialActiveUserOut]
     recent_results: list[SocialResultOut]
     following_user_ids: list[int]
+
+
+class SocialProfileUserOut(BaseModel):
+    id: int
+    username: str
+    role: UserRole
+
+
+class SocialUserProfileOut(BaseModel):
+    user: SocialProfileUserOut
+    tests_done: int
+    passed_tests: int
+    failed_tests: int
+    success_rate_percent: float
+    recent_results: list[SocialResultOut]
 
 
 def serialize_user(user: User) -> UserOut:
@@ -652,6 +668,7 @@ def build_social_dashboard(db: Session, current_user: User) -> SocialDashboardOu
                 SocialActiveUserOut(
                     id=user.id,
                     username=user.username,
+                    role=UserRole(user.role),
                     tests_done=tests_done,
                     success_rate_percent=round(success_rate, 2),
                     follower_count=follower_counts.get(user.id, 0),
@@ -664,6 +681,55 @@ def build_social_dashboard(db: Session, current_user: User) -> SocialDashboardOu
         active_users=active_users[:30],
         recent_results=recent_results,
         following_user_ids=following_user_ids,
+    )
+
+
+def build_social_user_profile(db: Session, target_user: User) -> SocialUserProfileOut:
+    attempts = db.scalars(
+        select(Attempt)
+        .where(Attempt.user_id == target_user.id, Attempt.status != AttemptStatus.IN_PROGRESS.value)
+        .order_by(Attempt.id.desc())
+    ).all()
+
+    tests_done = len(attempts)
+    passed_tests = len([item for item in attempts if item.passed])
+    failed_tests = tests_done - passed_tests
+    success_rate = (passed_tests / tests_done * 100) if tests_done else 0.0
+
+    config_ids = {item.test_config_id for item in attempts}
+    config_map: dict[int, TestConfig] = {}
+    if config_ids:
+        configs = db.scalars(select(TestConfig).where(TestConfig.id.in_(config_ids))).all()
+        config_map = {config.id: config for config in configs}
+
+    recent_results: list[SocialResultOut] = []
+    for item in attempts[:20]:
+        config = config_map.get(item.test_config_id)
+        topic_name = config.topic_name if config is not None else "Unknown Topic"
+        level_name = config.level_name if config is not None else "Unknown Level"
+        success_percent = (item.score / item.total_questions * 100) if item.total_questions else 0.0
+        recent_results.append(
+            SocialResultOut(
+                attempt_id=item.id,
+                user_id=target_user.id,
+                username=target_user.username,
+                topic_name=topic_name,
+                level_name=level_name,
+                score=item.score,
+                total_questions=item.total_questions,
+                passed=item.passed,
+                success_percent=round(success_percent, 2),
+                ended_at=item.ended_at,
+            )
+        )
+
+    return SocialUserProfileOut(
+        user=SocialProfileUserOut(id=target_user.id, username=target_user.username, role=UserRole(target_user.role)),
+        tests_done=tests_done,
+        passed_tests=passed_tests,
+        failed_tests=failed_tests,
+        success_rate_percent=round(success_rate, 2),
+        recent_results=recent_results,
     )
 
 
@@ -1277,6 +1343,18 @@ def social_dashboard(
     db: Annotated[Session, Depends(get_db)],
 ):
     return build_social_dashboard(db, current_user)
+
+
+@app.get("/social/users/{user_id}/profile", response_model=SocialUserProfileOut)
+def social_user_profile(
+    user_id: int,
+    _: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+):
+    target_user = db.get(User, user_id)
+    if target_user is None or not target_user.is_active:
+        raise HTTPException(status_code=404, detail="User not found.")
+    return build_social_user_profile(db, target_user)
 
 
 @app.get("/social/comments", response_model=list[SocialCommentOut])
