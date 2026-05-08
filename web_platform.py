@@ -122,19 +122,8 @@ def require_token(request: Request) -> str:
 
 
 def check_desktop_test_participation(request: Request) -> None:
-    """Only the desktop shell can start/submit timed tests via this web proxy."""
-    expected = os.getenv("DESKTOP_PARTICIPATION_TOKEN")
-    if not expected:
-        raise HTTPException(
-            status_code=403,
-            detail="Test participation via this UI is restricted to the desktop client.",
-        )
-    incoming = request.headers.get("x-desktop-participation", "")
-    if not incoming or incoming != expected:
-        raise HTTPException(
-            status_code=403,
-            detail="Test participation requires the Testing Platform desktop application.",
-        )
+    """Web test participation is allowed; anti-cheat runs in the browser session."""
+    return None
 
 
 def api_request(

@@ -890,7 +890,25 @@ createApp({
         },
         participationSelectOption(questionId, optionIndex) {
             if (!this.testSession || this.testSession.submitted) return;
+            const question = (this.testSession.questions || []).find((item) => Number(item.id) === Number(questionId));
+            if (question?.allow_multiple) {
+                const current = Array.isArray(this.testSession.answers[Number(questionId)])
+                    ? this.testSession.answers[Number(questionId)].slice()
+                    : [];
+                const option = Number(optionIndex);
+                const next = current.includes(option) ? current.filter((item) => item !== option) : [...current, option];
+                this.testSession.answers[Number(questionId)] = next.sort((a, b) => a - b);
+                return;
+            }
             this.testSession.answers[Number(questionId)] = Number(optionIndex);
+        },
+        participationOptionPicked(questionId, optionIndex) {
+            const question = (this.testSession?.questions || []).find((item) => Number(item.id) === Number(questionId));
+            const answer = this.testSession?.answers?.[Number(questionId)];
+            if (question?.allow_multiple) {
+                return Array.isArray(answer) && answer.includes(Number(optionIndex));
+            }
+            return answer === Number(optionIndex);
         },
         participationGoPrev() {
             if (!this.testSession?.questions?.length) return;

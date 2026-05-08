@@ -445,6 +445,7 @@ class QuestionPublicOut(BaseModel):
     id: int
     question_text: str
     options: list[str]
+    allow_multiple: bool = False
 
 
 class QuestionAdminOut(QuestionPublicOut):
@@ -1563,7 +1564,8 @@ def user_start_test(
     randomizer = secrets.SystemRandom()
     if config.sections:
         selected_questions: list[Question] = []
-        for section in config.sections:
+        ordered_sections = sorted(config.sections, key=lambda item: (item.order_index, item.id))
+        for section in ordered_sections:
             section_questions = list(section.questions)
             randomizer.shuffle(section_questions)
             selected_questions.extend(section_questions[: section.select_count])
@@ -1572,13 +1574,12 @@ def user_start_test(
     else:
         selected_questions = list(config.questions)
         randomizer.shuffle(selected_questions)
-    randomizer.shuffle(selected_questions)
     selected_question_ids = [question.id for question in selected_questions]
     max_score = sum(question_points(question) for question in selected_questions)
     question_payloads = []
     option_orders: dict[str, list[int]] = {}
     for question in selected_questions:
-        options = parse_options(question.options_json, question.correct_index)
+        options, correct_indices = parse_question_payload(question.options_json, question.correct_index)
         order = shuffled_option_order(len(options), randomizer)
         option_orders[str(question.id)] = order
         question_payloads.append(
@@ -1586,6 +1587,7 @@ def user_start_test(
                 id=question.id,
                 question_text=question.question_text,
                 options=[options[index] for index in order],
+                allow_multiple=len(correct_indices) > 1,
             )
         )
 

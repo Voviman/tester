@@ -402,6 +402,10 @@ body {
     color: var(--text);
 }
 
+.test-participate-multi-note {
+    margin: -8px 0 14px;
+}
+
 .test-participate-options {
     display: grid;
     gap: 8px;

@@ -1112,6 +1112,9 @@
                 </div>
                 <div v-if="testParticipationCurrentQuestion" class="test-participate-body">
                     <p class="test-participate-prompt">{{ testParticipationCurrentQuestion.question_text }}</p>
+                    <p v-if="testParticipationCurrentQuestion.allow_multiple" class="muted small test-participate-multi-note">
+                        Select all correct options.
+                    </p>
                     <div class="test-participate-options">
                         <label
                             v-for="(opt, idx) in testParticipationCurrentQuestion.options"
@@ -1119,14 +1122,14 @@
                             class="test-participate-option"
                             :class="{
                                 'test-participate-option--picked':
-                                    testSession.answers[testParticipationCurrentQuestion.id] === idx,
+                                    participationOptionPicked(testParticipationCurrentQuestion.id, idx),
                             }"
                         >
                             <input
-                                type="radio"
+                                :type="testParticipationCurrentQuestion.allow_multiple ? 'checkbox' : 'radio'"
                                 class="test-participate-radio"
                                 :name="'participate-q-' + testParticipationCurrentQuestion.id"
-                                :checked="testSession.answers[testParticipationCurrentQuestion.id] === idx"
+                                :checked="participationOptionPicked(testParticipationCurrentQuestion.id, idx)"
                                 @change="participationSelectOption(testParticipationCurrentQuestion.id, idx)"
                             >
                             <span class="test-participate-option-text">{{ optionLetter(idx) }}. {{ opt }}</span>
