@@ -54,16 +54,86 @@
                 <div v-if="error" class="alert error">{{ error }}</div>
 
                 <section v-if="view==='dashboard'" class="dashboard-grid">
+                    <aside class="filter-col panel filter-menu-panel" aria-label="Filter tests">
+                        <h2 class="filter-menu-heading">Filter tests</h2>
+                        <div class="filter-field">
+                            <label for="filter-test-name">Test name</label>
+                            <select
+                                id="filter-test-name"
+                                v-model="testFilterTopic"
+                                class="filter-select"
+                            >
+                                <option value="">All</option>
+                                <option
+                                    v-for="name in testFilterTopicOptions"
+                                    :key="'topic-' + name"
+                                    :value="name"
+                                >
+                                    {{ name }}
+                                </option>
+                            </select>
+                        </div>
+                        <div class="filter-field">
+                            <label for="filter-level">Level</label>
+                            <select
+                                id="filter-level"
+                                v-model="testFilterLevel"
+                                class="filter-select"
+                            >
+                                <option value="">All</option>
+                                <option
+                                    v-for="name in testFilterLevelOptions"
+                                    :key="'level-' + name"
+                                    :value="name"
+                                >
+                                    {{ name }}
+                                </option>
+                            </select>
+                        </div>
+                        <div class="filter-field">
+                            <label for="filter-duration">Duration</label>
+                            <select
+                                id="filter-duration"
+                                v-model="testFilterDuration"
+                                class="filter-select"
+                            >
+                                <option value="">All</option>
+                                <option
+                                    v-for="mins in testFilterDurationOptions"
+                                    :key="'dur-' + mins"
+                                    :value="String(mins)"
+                                >
+                                    {{ mins }} min
+                                </option>
+                            </select>
+                        </div>
+                        <button
+                            type="button"
+                            class="btn secondary small filter-clear-btn"
+                            @click="clearDashboardTestFilters"
+                        >
+                            Clear filters
+                        </button>
+                    </aside>
+
                     <div class="main-col">
                         <article class="panel available-tests-panel">
-                            <h2>Available Tests</h2>
+                            <h2 class="available-tests-heading">Available Tests</h2>
+                            <input
+                                v-model.trim="testSearchQuery"
+                                class="user-search available-tests-search"
+                                type="search"
+                                placeholder="Search tests"
+                                aria-label="Search tests by topic or level"
+                            >
                             <div v-if="!dashboard.social_dashboard.tests.length" class="empty">No active tests found.</div>
+                            <div v-else-if="!filteredDashboardTests.length" class="empty">No tests match your filters or search.</div>
                             <div
-                                v-for="test in dashboard.social_dashboard.tests"
+                                v-for="test in filteredDashboardTests"
                                 :key="test.id"
                                 class="test-card"
                             >
-                                <div class="test-top">
+                                <div class="test-top test-top-geo" :style="testCardGeometricBackground(test)">
                                     <div>
                                         <h3 class="test-title">{{ test.topic_name }} - {{ test.level_name }}</h3>
                                         <div class="test-meta">
@@ -77,55 +147,96 @@
                                 </div>
 
                                 <div class="comment-section">
-                                    <div class="comment-form">
-                                        <textarea
-                                            v-model="commentDrafts[test.id]"
-                                            rows="2"
-                                            placeholder="Share feedback or tips for this test..."
-                                        ></textarea>
-                                        <button
-                                            class="btn primary small comment-submit icon-btn"
-                                            @click="postComment(test.id)"
-                                            :disabled="busy"
-                                            aria-label="Post comment"
-                                            title="Post comment"
-                                        >
-                                            <i class="bi bi-send icon" aria-hidden="true"></i>
-                                        </button>
-                                    </div>
+                                    <button
+                                        type="button"
+                                        class="comment-collapse-toggle"
+                                        :aria-expanded="isCommentSectionOpen(test.id)"
+                                        :aria-controls="'comment-drawer-' + test.id"
+                                        :aria-label="isCommentSectionOpen(test.id)
+                                            ? ('Collapse comments for ' + test.topic_name + ' - ' + test.level_name)
+                                            : ('Expand comments for ' + test.topic_name + ' - ' + test.level_name)"
+                                        @click="toggleCommentSection(test.id)"
+                                    >
+                                        <span class="comment-collapse-main">
+                                            <span class="comment-collapse-count">
+                                                <strong>{{ commentCountForTest(test.id) }}</strong>
+                                                {{ commentCountForTest(test.id) === 1 ? "comment" : "comments" }}
+                                            </span>
+                                            <span
+                                                v-if="latestCommentPreviewForTest(test.id)"
+                                                class="comment-collapse-preview muted"
+                                            >
+                                                · {{ latestCommentPreviewForTest(test.id) }}
+                                            </span>
+                                            <span
+                                                v-else
+                                                class="comment-collapse-preview muted"
+                                            >
+                                                · No comments yet
+                                            </span>
+                                        </span>
+                                        <i
+                                            class="bi comment-collapse-chevron"
+                                            :class="isCommentSectionOpen(test.id) ? 'bi-chevron-up' : 'bi-chevron-down'"
+                                            aria-hidden="true"
+                                        ></i>
+                                    </button>
 
-                                    <div class="comment-thread">
-                                        <div class="comment-list">
-                                            <div
-                                                v-for="comment in visibleComments(test.id)"
-                                                :key="comment.id"
-                                                :class="['comment-item', { mine: comment.username === me?.username }]"
+                                    <div
+                                        :id="'comment-drawer-' + test.id"
+                                        v-show="isCommentSectionOpen(test.id)"
+                                        class="comment-section-expanded"
+                                    >
+                                        <div class="comment-form">
+                                            <textarea
+                                                v-model="commentDrafts[test.id]"
+                                                rows="2"
+                                                placeholder="Share feedback or tips for this test..."
+                                            ></textarea>
+                                            <button
+                                                class="btn primary small comment-submit icon-btn"
+                                                @click="postComment(test.id)"
+                                                :disabled="busy"
+                                                aria-label="Post comment"
+                                                title="Post comment"
                                             >
-                                                <div class="avatar" :style="avatarStyle(comment.username)" aria-hidden="true">
-                                                    {{ userInitials(comment.username) }}
-                                                </div>
-                                                <div class="comment-content">
-                                                    <div class="comment-meta">
-                                                        <strong>{{ comment.username }}</strong>
-                                                        <span>{{ formatDate(comment.created_at) }}</span>
-                                                    </div>
-                                                    <p class="comment-bubble">{{ comment.content }}</p>
-                                                </div>
-                                            </div>
-                                            <div v-if="!(dashboard.comments_by_test[test.id] || []).length" class="empty small">
-                                                No comments yet.
-                                            </div>
+                                                <i class="bi bi-send icon" aria-hidden="true"></i>
+                                            </button>
                                         </div>
-                                        <div v-if="hasMoreComments(test.id)" class="comment-more-wrap">
-                                            <a
-                                                class="comment-more-text"
-                                                href="#"
-                                                @click.prevent="showMoreComments(test.id)"
-                                                aria-label="Show more comments"
-                                                title="Show more comments"
-                                            >
-                                                Show more
-                                            </a>
+
+                                        <div class="comment-thread">
+                                            <div class="comment-list">
+                                                <div
+                                                    v-for="comment in visibleComments(test.id)"
+                                                    :key="comment.id"
+                                                    :class="['comment-item', { mine: comment.username === me?.username }]"
+                                                >
+                                                    <div class="avatar" :style="avatarStyle(comment.username)" aria-hidden="true">
+                                                        {{ userInitials(comment.username) }}
+                                                    </div>
+                                                    <div class="comment-content">
+                                                        <div class="comment-meta">
+                                                            <strong>{{ comment.username }}</strong>
+                                                            <span>{{ formatDate(comment.created_at) }}</span>
+                                                        </div>
+                                                        <p class="comment-bubble">{{ comment.content }}</p>
+                                                    </div>
+                                                </div>
+                                                <div v-if="!(dashboard.comments_by_test[test.id] || []).length" class="empty small">
+                                                    No comments yet.
+                                                </div>
+                                            </div>
+                                            <div v-if="hasMoreComments(test.id)" class="comment-more-wrap">
+                                                <a
+                                                    class="comment-more-text"
+                                                    href="#"
+                                                    @click.prevent="showMoreComments(test.id)"
+                                                    aria-label="Show more comments"
+                                                    title="Show more comments"
+                                                >
+                                                    Show more
+                                                </a>
+                                            </div>
                                         </div>
                                     </div>
                                 </div>
@@ -135,7 +246,17 @@
 
                     <aside class="side-col">
                         <article class="panel">
-                            <h2>Your Snapshot</h2>
+                            <div class="user-name-row snapshot-panel-heading">
+                                <h2 class="snapshot-heading">{{ snapshotSidebarUsername }}</h2>
+                                <span
+                                    v-if="snapshotSidebarIsAdmin"
+                                    class="admin-role-badge"
+                                    aria-label="Administrator"
+                                    title="Admin"
+                                >
+                                    <i class="bi bi-patch-check-fill icon" aria-hidden="true"></i>
+                                </span>
+                            </div>
                             <div class="quick-stats">
                                 <div><span>Credits</span><strong>{{ Number(dashboard.profile.user?.credits ?? 0) }}</strong></div>
                                 <div><span>Tests</span><strong>{{ Number(dashboard.profile.tests_done ?? 0) }}</strong></div>
@@ -257,29 +378,207 @@
                     </aside>
                 </section>
 
-                <section v-else-if="view==='profile'" class="profile-grid">
-                    <article class="panel">
-                        <h2>{{ profileIsPublic ? 'User Profile' : 'My Profile' }}</h2>
-                        <div class="profile-details">
-                            <div><span>Username</span><strong>{{ profile.profile.user.username }}</strong></div>
-                            <div v-if="profileIsPublic"><span>Role</span><strong>{{ profilePublicRole || 'user' }}</strong></div>
-                            <div v-if="!profileIsPublic"><span>Email</span><strong>{{ profile.profile.user.email }}</strong></div>
-                            <div v-if="!profileIsPublic"><span>Credits</span><strong>{{ profile.profile.user.credits }}</strong></div>
-                            <div><span>Tests done</span><strong>{{ profile.profile.tests_done }}</strong></div>
-                            <div><span>Passed</span><strong>{{ profile.profile.passed_tests }}</strong></div>
-                            <div><span>Failed</span><strong>{{ profile.profile.failed_tests }}</strong></div>
-                            <div><span>Success rate</span><strong>{{ Number(profile.profile.success_rate_percent).toFixed(2) }}%</strong></div>
+                <section v-else-if="view==='profile'" class="profile-page">
+                    <article class="panel profile-hero-panel">
+                        <div class="profile-hero">
+                            <div
+                                class="profile-avatar-xl"
+                                :style="avatarStyle(profile.profile.user.username)"
+                                aria-hidden="true"
+                            >
+                                {{ userInitials(profile.profile.user.username) }}
+                            </div>
+                            <div class="profile-hero-rest">
+                                <div class="profile-identity-row">
+                                    <h2 class="profile-display-name">
+                                        {{ profile.profile.user.username }}
+                                    </h2>
+                                    <span
+                                        v-if="profileShowsAdminBadge"
+                                        class="admin-role-badge profile-role-badge"
+                                        title="Admin"
+                                        aria-label="Administrator"
+                                    >
+                                        <i class="bi bi-patch-check-fill icon" aria-hidden="true"></i>
+                                    </span>
+                                </div>
+                                <div v-if="!profileIsPublic" class="profile-secondary-line muted small">
+                                    {{ profile.profile.user.email || "—" }}
+                                </div>
+                                <div v-else class="profile-secondary-line muted small">
+                                    Public profile
+                                    <template v-if="profilePublicRole">
+                                        · {{ normalizeRole(profilePublicRole) }}
+                                    </template>
+                                </div>
+                                <ul class="profile-metric-strip" aria-label="Activity summary">
+                                    <li>
+                                        <span class="profile-metric-num">{{ profile.profile.tests_done }}</span>
+                                        <span class="profile-metric-lbl">tests</span>
+                                    </li>
+                                    <li v-if="!profileIsPublic">
+                                        <span class="profile-metric-num">{{ profile.profile.user.credits }}</span>
+                                        <span class="profile-metric-lbl">credits</span>
+                                    </li>
+                                    <li>
+                                        <span class="profile-metric-num">{{
+                                            Number(profile.profile.success_rate_percent).toFixed(0)
+                                        }}%</span>
+                                        <span class="profile-metric-lbl">success</span>
+                                    </li>
+                                    <li>
+                                        <span class="profile-metric-num">{{ profile.profile.passed_tests }}</span>
+                                        <span class="profile-metric-lbl">passed</span>
+                                    </li>
+                                    <li>
+                                        <span class="profile-metric-num">{{ profile.profile.failed_tests }}</span>
+                                        <span class="profile-metric-lbl">failed</span>
+                                    </li>
+                                </ul>
+                            </div>
+                        </div>
+
+                        <div class="profile-viz-board" aria-label="Profile statistics graphs">
+                            <div class="profile-viz-card">
+                                <div class="profile-viz-heading">Passed vs failed</div>
+                                <div class="profile-viz-inner">
+                                    <div class="profile-donut-shell" aria-hidden="true">
+                                        <div class="profile-donut-ring" :style="profileOutcomeDonutStyle"></div>
+                                        <div class="profile-donut-cutout">
+                                            <span class="profile-donut-value">{{ profile.profile.passed_tests }}</span>
+                                            <span class="profile-donut-caption muted">passed</span>
+                                        </div>
+                                    </div>
+                                    <div class="profile-viz-side">
+                                        <ul class="profile-legend muted small">
+                                            <li>
+                                                <span class="profile-leg-dot profile-leg-dot--pass"></span>
+                                                Passed
+                                                <strong class="profile-leg-val">{{ profile.profile.passed_tests }}</strong>
+                                            </li>
+                                            <li>
+                                                <span class="profile-leg-dot profile-leg-dot--fail"></span>
+                                                Failed
+                                                <strong class="profile-leg-val">{{ profile.profile.failed_tests }}</strong>
+                                            </li>
+                                        </ul>
+                                        <div
+                                            v-if="profileOutcomeTotal > 0"
+                                            class="profile-hbar"
+                                            role="presentation"
+                                        >
+                                            <div
+                                                class="profile-hbar-pass"
+                                                :style="{ width: profileStackPassPercent + '%' }"
+                                            ></div>
+                                            <div
+                                                class="profile-hbar-fail"
+                                                :style="{ width: profileStackFailPercent + '%' }"
+                                            ></div>
+                                        </div>
+                                        <div v-else class="profile-viz-empty muted tiny">Finish a test to see split</div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="profile-viz-card">
+                                <div class="profile-viz-heading">Success rate</div>
+                                <div class="profile-viz-inner">
+                                    <div class="profile-donut-shell profile-donut-shell--accent" aria-hidden="true">
+                                        <div class="profile-donut-ring" :style="profileSuccessGaugeStyle"></div>
+                                        <div class="profile-donut-cutout">
+                                            <span class="profile-donut-value">{{
+                                                Number(profile.profile.success_rate_percent).toFixed(1)
+                                            }}</span>
+                                            <span class="profile-donut-caption muted">%</span>
+                                        </div>
+                                    </div>
+                                    <div class="profile-viz-side profile-viz-side--grow">
+                                        <div class="profile-gauge-label muted tiny">Share of answered tests passed</div>
+                                        <div class="profile-linear-bar">
+                                            <div
+                                                class="profile-linear-fill"
+                                                :style="{
+                                                    width:
+                                                        Math.min(
+                                                            100,
+                                                            Math.max(0, Number(profile.profile.success_rate_percent)),
+                                                        ) + '%',
+                                                }"
+                                            ></div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="profile-viz-card profile-viz-card--span">
+                                <div class="profile-viz-heading">Activity</div>
+                                <div class="profile-activity-rows">
+                                    <div class="profile-act-row">
+                                        <span class="profile-act-label">Tests completed</span>
+                                        <div class="profile-act-track">
+                                            <div
+                                                class="profile-act-fill"
+                                                :style="{ width: profileActivityBarPercent + '%' }"
+                                            ></div>
+                                        </div>
+                                        <strong class="profile-act-num">{{ profile.profile.tests_done }}</strong>
+                                    </div>
+                                    <div class="profile-act-grid">
+                                        <div v-if="!profileIsPublic" class="profile-act-pill">
+                                            <span class="muted tiny">Credits</span>
+                                            <strong class="profile-act-pill-val">{{ profile.profile.user.credits }}</strong>
+                                        </div>
+                                        <div class="profile-act-pill">
+                                            <span class="muted tiny">Passed</span>
+                                            <strong class="profile-act-pill-val">{{ profile.profile.passed_tests }}</strong>
+                                        </div>
+                                        <div class="profile-act-pill">
+                                            <span class="muted tiny">Failed</span>
+                                            <strong class="profile-act-pill-val">{{ profile.profile.failed_tests }}</strong>
+                                        </div>
+                                        <div class="profile-act-pill">
+                                            <span class="muted tiny">Recent avg</span>
+                                            <strong class="profile-act-pill-val">{{ profileAvgRecentPercent != null ? profileAvgRecentPercent + '%' : '—' }}</strong>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                     </article>
-                    <article class="panel">
-                        <h2>{{ profileIsPublic ? 'Recent Results' : 'My Recent Results' }}</h2>
+
+                    <article class="panel profile-feed-panel">
+                        <h3 class="profile-feed-title">
+                            {{ profileIsPublic ? "Recent Results" : "My Recent Results" }}
+                        </h3>
                         <div v-if="!profile.my_results.length" class="empty">No recent results yet.</div>
-                        <div v-for="item in profile.my_results" :key="item.attempt_id" class="feed-row">
-                            <div><strong>{{ item.topic_name }} - {{ item.level_name }}</strong></div>
-                            <div class="muted small">
-                                {{ item.score }}/{{ item.total_questions }} ({{ Number(item.success_percent).toFixed(2) }}%)
-                                - <span :class="item.passed ? 'ok' : 'bad'">{{ item.passed ? 'Passed' : 'Failed' }}</span>
-                                - {{ formatDate(item.ended_at) }}
+                        <div v-else class="profile-results-masonry">
+                            <div
+                                v-for="item in profile.my_results"
+                                :key="item.attempt_id"
+                                class="profile-result-card"
+                            >
+                                <div
+                                    class="profile-result-head test-top-geo"
+                                    :style="profileResultGeoStyle(item)"
+                                >
+                                    <span class="profile-result-topic">{{ item.topic_name }} · {{ item.level_name }}</span>
+                                    <span
+                                        :class="[
+                                            'profile-result-status',
+                                            item.passed ? 'profile-result-status--ok' : 'profile-result-status--bad',
+                                        ]"
+                                    >
+                                        {{ item.passed ? "Passed" : "Failed" }}
+                                    </span>
+                                </div>
+                                <div class="profile-result-body muted small">
+                                    <span>{{ item.score }}/{{ item.total_questions }}</span>
+                                    <span class="profile-result-dot">·</span>
+                                    <span>{{ Number(item.success_percent).toFixed(1) }}%</span>
+                                    <span class="profile-result-dot">·</span>
+                                    <span>{{ formatDate(item.ended_at) }}</span>
+                                </div>
                             </div>
                         </div>
                     </article>

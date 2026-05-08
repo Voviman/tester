@@ -15,8 +15,13 @@ createApp({
                 password: "",
             },
             userSearchQuery: "",
+            testSearchQuery: "",
+            testFilterTopic: "",
+            testFilterLevel: "",
+            testFilterDuration: "",
             commentDrafts: {},
             commentVisibleCounts: {},
+            commentSectionExpanded: {},
             preloadTtlMs: 45_000,
             preloadStatus: {
                 dashboard: false,
@@ -124,8 +129,106 @@ createApp({
         filteredActiveUsers() {
             const users = this.dashboard?.social_dashboard?.active_users || [];
             const query = this.userSearchQuery.trim().toLowerCase();
-            if (!query) return users;
-            return users.filter((user) => String(user.username || "").toLowerCase().includes(query));
+            const list = query
+                ? users.filter((u) => String(u.username || "").toLowerCase().includes(query))
+                : users.slice();
+
+            const adminRank = (role) => {
+                const r = String(role ?? "").toLowerCase();
+                if (r === "super_admin") return 0;
+                if (r === "admin") return 1;
+                return 2;
+            };
+            list.sort((a, b) => {
+                const ra = adminRank(a.role);
+                const rb = adminRank(b.role);
+                if (ra !== rb) return ra - rb;
+                const testsA = Number(a.tests_done ?? 0);
+                const testsB = Number(b.tests_done ?? 0);
+                if (testsB !== testsA) return testsB - testsA;
+                return String(a.username || "").localeCompare(String(b.username || ""), undefined, {
+                    sensitivity: "base",
+                });
+            });
+            return list;
+        },
+        dashboardTestsRaw() {
+            return this.dashboard?.social_dashboard?.tests || [];
+        },
+        testsFilteredByTopicOnly() {
+            const tests = this.dashboardTestsRaw;
+            const topic = String(this.testFilterTopic || "");
+            if (!topic) return tests;
+            return tests.filter((t) => t.topic_name === topic);
+        },
+        testsFilteredByTopicAndLevel() {
+            let tests = this.testsFilteredByTopicOnly;
+            const level = String(this.testFilterLevel || "");
+            if (level) tests = tests.filter((t) => t.level_name === level);
+            return tests;
+        },
+        testFilterTopicOptions() {
+            const seen = new Set();
+            for (const t of this.dashboardTestsRaw) {
+                const name = t.topic_name;
+                if (name) seen.add(name);
+            }
+            return [...seen].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+        },
+        testFilterLevelOptions() {
+            const seen = new Set();
+            for (const t of this.testsFilteredByTopicOnly) {
+                const name = t.level_name;
+                if (name) seen.add(name);
+            }
+            return [...seen].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+        },
+        testFilterDurationOptions() {
+            const seen = new Set();
+            for (const t of this.testsFilteredByTopicAndLevel) {
+                const mins = Math.max(0, Math.floor(Number(t.duration_seconds || 0) / 60));
+                seen.add(mins);
+            }
+            return [...seen].sort((a, b) => a - b);
+        },
+        filteredDashboardTests() {
+            let tests = this.dashboardTestsRaw;
+            if (this.testFilterTopic) {
+                tests = tests.filter((t) => t.topic_name === this.testFilterTopic);
+            }
+            if (this.testFilterLevel) {
+                tests = tests.filter((t) => t.level_name === this.testFilterLevel);
+            }
+            if (this.testFilterDuration !== "") {
+                const want = Number(this.testFilterDuration);
+                if (Number.isFinite(want)) {
+                    tests = tests.filter(
+                        (t) => Math.floor(Number(t.duration_seconds || 0) / 60) === want,
+                    );
+                }
+            }
+            const query = String(this.testSearchQuery || "").trim().toLowerCase();
+            if (query) {
+                tests = tests.filter((t) => {
+                    const topic = String(t.topic_name || "").toLowerCase();
+                    const level = String(t.level_name || "").toLowerCase();
+                    const combined = `${topic} - ${level}`;
+                    return topic.includes(query) || level.includes(query) || combined.includes(query);
+                });
+            }
+            return tests;
+        },
+        snapshotSidebarUsername() {
+            const fromMe = String(this.me?.username || "").trim();
+            if (fromMe) return fromMe;
+            const fromProfile = String(this.dashboard?.profile?.user?.username || "").trim();
+            return fromProfile || "You";
+        },
+        snapshotSidebarIsAdmin() {
+            return (
+                this.isAdminRole(this.me?.role) ||
+                this.isAdminRole(this.dashboard?.profile?.user?.role)
+            );
         },
         adminTestSubmitLabel() {
             return this.admin.testFormMode === "update" ? "Update Test" : "Create Test";
@@ -185,8 +288,101 @@ createApp({
         questionSubmitLabel() {
             return this.admin.questionModalMode === "edit" ? "Update Question" : "Create Question";
         },
+        profileOutcomeTotal() {
+            const p = Number(this.profile?.profile?.passed_tests ?? 0);
+            const f = Number(this.profile?.profile?.failed_tests ?? 0);
+            return p + f;
+        },
+        profileOutcomeDonutStyle() {
+            const pr = this.profile?.profile;
+            const p = Number(pr?.passed_tests ?? 0);
+            const f = Number(pr?.failed_tests ?? 0);
+            const t = p + f;
+            if (t <= 0) {
+                return { background: "conic-gradient(#e2e8f0 0deg 360deg)" };
+            }
+            const deg = (p / t) * 360;
+            const ok = "#16a34a";
+            const rest = "#94a3b8";
+            return {
+                background: `conic-gradient(${ok} 0deg, ${ok} ${deg}deg, ${rest} ${deg}deg, ${rest} 360deg)`,
+            };
+        },
+        profileSuccessGaugeStyle() {
+            const pct = Math.max(
+                0,
+                Math.min(100, Number(this.profile?.profile?.success_rate_percent ?? 0)),
+            );
+            const deg = (pct / 100) * 360;
+            const fill = "#2563eb";
+            const track = "#e2e8f0";
+            return {
+                background: `conic-gradient(${fill} 0deg, ${fill} ${deg}deg, ${track} ${deg}deg, ${track} 360deg)`,
+            };
+        },
+        profileStackPassPercent() {
+            const p = Number(this.profile?.profile?.passed_tests ?? 0);
+            const f = Number(this.profile?.profile?.failed_tests ?? 0);
+            const t = p + f;
+            if (t <= 0) return 0;
+            return (p / t) * 100;
+        },
+        profileStackFailPercent() {
+            const p = Number(this.profile?.profile?.passed_tests ?? 0);
+            const f = Number(this.profile?.profile?.failed_tests ?? 0);
+            const t = p + f;
+            if (t <= 0) return 0;
+            return (f / t) * 100;
+        },
+        profileShowsAdminBadge() {
+            if (this.profileIsPublic) {
+                return this.isAdminRole(this.normalizeRole(this.profilePublicRole));
+            }
+            return (
+                this.isAdminRole(this.normalizeRole(this.profile?.profile?.user?.role)) ||
+                this.isAdminRole(this.normalizeRole(this.me?.role))
+            );
+        },
+        profileActivityBarPercent() {
+            const n = Number(this.profile?.profile?.tests_done ?? 0);
+            if (n <= 0) return 0;
+            const fullAt = 25;
+            return Math.min(100, Math.round((n / fullAt) * 100));
+        },
+        profileAvgRecentPercent() {
+            const rows = this.profile?.my_results || [];
+            if (!Array.isArray(rows) || rows.length === 0) return null;
+            const sum = rows.reduce((s, r) => s + Number(r.success_percent ?? 0), 0);
+            const v = sum / rows.length;
+            return Number.isFinite(v) ? v.toFixed(1) : null;
+        },
+    },
+    watch: {
+        testFilterTopic() {
+            this.$nextTick(() => {
+                if (this.testFilterLevel && !this.testFilterLevelOptions.includes(this.testFilterLevel)) {
+                    this.testFilterLevel = "";
+                }
+                this.syncTestFilterDuration();
+            });
+        },
+        testFilterLevel() {
+            this.$nextTick(() => this.syncTestFilterDuration());
+        },
     },
     methods: {
+        syncTestFilterDuration() {
+            const allowed = new Set(this.testFilterDurationOptions.map((m) => String(m)));
+            const cur = String(this.testFilterDuration ?? "");
+            if (cur !== "" && !allowed.has(cur)) {
+                this.testFilterDuration = "";
+            }
+        },
+        clearDashboardTestFilters() {
+            this.testFilterTopic = "";
+            this.testFilterLevel = "";
+            this.testFilterDuration = "";
+        },
         pathToView(pathname) {
             if (pathname === "/profile") return "profile";
             if (pathname === "/admin") return "admin";
@@ -403,6 +599,89 @@ createApp({
                 background: `linear-gradient(135deg, hsl(${hue} 70% 56%), hsl(${nextHue} 70% 44%))`,
             };
         },
+        testCardHashSeed(test) {
+            let h = Number(test?.id ?? 0) >>> 0;
+            const s = `${String(test?.topic_name ?? "")}\0${String(test?.level_name ?? "")}`;
+            for (let i = 0; i < s.length; i += 1) {
+                h = Math.imul(31, h) + s.charCodeAt(i);
+                h >>>= 0;
+            }
+            return h || 1;
+        },
+        testCardGeometricBackground(test) {
+            let state = this.testCardHashSeed(test);
+            const rnd = () => {
+                state = Math.imul(1664525, state) + 1013904223;
+                return (state >>> 0) / 2 ** 32;
+            };
+            const h1 = Math.floor(rnd() * 360);
+            const h2 = Math.floor(h1 + 28 + rnd() * 92) % 360;
+            const h3 = Math.floor(h2 + 40 + rnd() * 88) % 360;
+            const xp1 = `${(8 + rnd() * 76).toFixed(1)}%`;
+            const yp1 = `${(10 + rnd() * 70).toFixed(1)}%`;
+            const xp2 = `${(62 + rnd() * 32).toFixed(1)}%`;
+            const yp2 = `${(12 + rnd() * 55).toFixed(1)}%`;
+            const ang1 = Math.floor(rnd() * 140);
+            const ang2 = Math.floor(55 + rnd() * 115);
+            const ang3 = Math.floor(rnd() * 180);
+
+            const layers = [
+                `linear-gradient(
+                    ${165 + Math.floor(rnd() * 20)}deg,
+                    rgba(255, 255, 255, 0.965) 0%,
+                    rgba(255, 255, 255, 0.72) 48%,
+                    rgba(253, 252, 255, 0.78) 100%
+                )`,
+                `conic-gradient(
+                    from ${ang1 + 200 + Math.floor(rnd() * 40)}deg at ${xp1} ${yp1},
+                    hsla(${h2} 70% 78% / 0.42) 0deg,
+                    transparent 42deg,
+                    hsla(${h1} 75% 80% / 0.38) 88deg,
+                    transparent 148deg,
+                    hsla(${h3} 65% 82% / 0.34) 210deg,
+                    transparent 296deg,
+                    hsla(${h2} 68% 84% / 0.26) 330deg,
+                    transparent 360deg
+                )`,
+                `linear-gradient(
+                    ${ang2 + 35}deg,
+                    hsla(${h1} 62% 90% / 0.92) 0%,
+                    transparent 46%,
+                    hsla(${h3} 58% 88% / 0.72) 100%
+                )`,
+                `radial-gradient(
+                    ellipse ${`${(55 + rnd() * 45).toFixed(0)}%`} ${`${(35 + rnd() * 40).toFixed(0)}%`}
+                    at ${xp2} ${yp2},
+                    hsla(${h2} 78% 86% / 0.62) 0%,
+                    transparent 58%
+                )`,
+                `repeating-linear-gradient(
+                    ${ang3 + 15}deg,
+                    transparent 0 11px,
+                    hsla(${h1} 50% 50% / 0.048) 11px 12px,
+                    transparent 12px 28px,
+                    hsla(${h3} 45% 50% / 0.036) 28px 29px,
+                    transparent 29px 40px
+                )`,
+                `linear-gradient(
+                    ${-40 + Math.floor(rnd() * 100)}deg,
+                    transparent 52%,
+                    hsla(${h2} 70% 70% / 0.16) 100%
+                )`,
+            ].map((layer) => layer.replace(/\s+/g, " ").trim());
+
+            return {
+                backgroundColor: `hsl(${h1} 42% 98%)`,
+                backgroundImage: layers.join(", "),
+            };
+        },
+        profileResultGeoStyle(item) {
+            return this.testCardGeometricBackground({
+                id: item.attempt_id,
+                topic_name: item.topic_name,
+                level_name: item.level_name,
+            });
+        },
         commentVisibleCount(testId) {
             return this.commentVisibleCounts[testId] || 2;
         },
@@ -419,6 +698,42 @@ createApp({
             const comments = this.dashboard.comments_by_test[testId] || [];
             const current = this.commentVisibleCount(testId);
             this.commentVisibleCounts[testId] = Math.min(comments.length, current + 2);
+        },
+        commentCountForTest(testId) {
+            const list = this.dashboard.comments_by_test[testId];
+            return Array.isArray(list) ? list.length : 0;
+        },
+        latestCommentForTest(testId) {
+            const list = this.dashboard.comments_by_test[testId];
+            if (!Array.isArray(list) || !list.length) return null;
+            let best = list[0];
+            let bestMs = new Date(best.created_at || 0).getTime();
+            for (let i = 1; i < list.length; i += 1) {
+                const item = list[i];
+                const ms = new Date(item.created_at || 0).getTime();
+                if (ms >= bestMs) {
+                    best = item;
+                    bestMs = ms;
+                }
+            }
+            return best;
+        },
+        latestCommentPreviewForTest(testId, maxLen = 90) {
+            const c = this.latestCommentForTest(testId);
+            if (!c) return "";
+            const text = String(c.content || "")
+                .trim()
+                .replace(/\s+/g, " ");
+            if (!text) return "";
+            if (text.length <= maxLen) return text;
+            return `${text.slice(0, maxLen).trimEnd()}…`;
+        },
+        isCommentSectionOpen(testId) {
+            return Boolean(this.commentSectionExpanded[String(testId)]);
+        },
+        toggleCommentSection(testId) {
+            const key = String(testId);
+            this.commentSectionExpanded[key] = !this.commentSectionExpanded[key];
         },
         selectAdminTest(testConfigId) {
             this.admin.selectedTestConfigId = Number(testConfigId) || 0;
@@ -965,6 +1280,9 @@ createApp({
             this.profileIsPublic = false;
             this.profilePublicRole = "";
             this.dashboard.social_dashboard.tests = [];
+            this.testSearchQuery = "";
+            this.clearDashboardTestFilters();
+            this.commentSectionExpanded = {};
             this.resetPreloadState();
             window.history.replaceState({}, "", "/");
         },
@@ -991,6 +1309,11 @@ createApp({
                 for (const testId of Object.keys(this.commentVisibleCounts)) {
                     if (!activeTestIds.has(testId)) {
                         delete this.commentVisibleCounts[testId];
+                    }
+                }
+                for (const testId of Object.keys(this.commentSectionExpanded)) {
+                    if (!activeTestIds.has(testId)) {
+                        delete this.commentSectionExpanded[testId];
                     }
                 }
                 for (const test of normalized.social_dashboard.tests) {
@@ -1088,6 +1411,7 @@ createApp({
                 this.commentDrafts[testConfigId] = "";
                 this.success = "Comment posted.";
                 await this.loadDashboard();
+                this.commentSectionExpanded[String(testConfigId)] = true;
             } catch (error) {
                 this.error = error.message;
             } finally {
