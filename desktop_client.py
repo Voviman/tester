@@ -14,6 +14,13 @@ import requests
 API_BASE_URL = os.getenv("PLATFORM_API_URL", "https://tester-pykb.onrender.com/").rstrip("/")
 
 
+def normalize_section_type(value: str | None) -> str:
+    normalized = str(value or "regular").strip().lower().replace("-", "_")
+    if normalized in {"case", "scenario", "case_scenario", "case_scenario_section"}:
+        return "case_scenario"
+    return "regular"
+
+
 class APIError(Exception):
     pass
 
@@ -277,7 +284,11 @@ class TestWindow:
         self.meta_label.config(
             text=f"Question {self.current_index + 1}/{len(self.questions)} | Pass threshold: {self.passing_percent:.2f}%"
         )
-        scenario = str(question.get("global_question") or "").strip() if question.get("section_type") == "case_scenario" else ""
+        scenario = (
+            str(question.get("global_question") or "").strip()
+            if normalize_section_type(question.get("section_type")) == "case_scenario"
+            else ""
+        )
         self.scenario_label.config(text=f"{question.get('section_name') or 'Case Scenario'}\n{scenario}" if scenario else "")
         self.question_label.config(text=question["question_text"])
         for idx, option_text in enumerate(question["options"]):
@@ -875,7 +886,7 @@ class DesktopPlatformApp(tk.Tk):
         self.section_select_count.insert(0, str(section["select_count"]))
         self.section_points.delete(0, tk.END)
         self.section_points.insert(0, str(section["points_per_question"]))
-        self.section_type.set(str(section.get("section_type") or "regular"))
+        self.section_type.set(normalize_section_type(section.get("section_type")))
         self.section_requires_full_score.set(bool(section.get("requires_full_score")))
         self.section_global_question.delete("1.0", tk.END)
         self.section_global_question.insert("1.0", str(section.get("global_question") or ""))
@@ -886,7 +897,7 @@ class DesktopPlatformApp(tk.Tk):
         name = self.section_name.get().strip()
         select_raw = self.section_select_count.get().strip()
         points_raw = self.section_points.get().strip()
-        section_type = self.section_type.get().strip() or "regular"
+        section_type = normalize_section_type(self.section_type.get())
         global_question = self.section_global_question.get("1.0", tk.END).strip()
         try:
             config_id = int(config_id_raw)

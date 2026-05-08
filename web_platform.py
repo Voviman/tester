@@ -114,6 +114,13 @@ class TestBuilderIn(BaseModel):
     correct_index: int = Field(ge=0)
 
 
+def normalize_section_type(value: str | None) -> str:
+    normalized = str(value or "regular").strip().lower().replace("-", "_")
+    if normalized in {"case", "scenario", "case_scenario", "case_scenario_section"}:
+        return "case_scenario"
+    return "regular"
+
+
 def get_token(request: Request) -> str | None:
     return request.cookies.get(COOKIE_NAME)
 
@@ -456,7 +463,8 @@ def webapi_admin_delete_config(request: Request, test_config_id: int):
 @app.post("/webapi/admin/test-sections")
 def webapi_admin_create_section(request: Request, payload: SectionCreateIn):
     token = require_token(request)
-    return api_request(
+    section_type = normalize_section_type(payload.section_type)
+    result = api_request(
         token,
         "POST",
         "/admin/test-sections",
@@ -466,15 +474,25 @@ def webapi_admin_create_section(request: Request, payload: SectionCreateIn):
             "select_count": payload.select_count,
             "points_per_question": payload.points_per_question,
             "requires_full_score": payload.requires_full_score,
-            "section_type": payload.section_type,
-            "global_question": payload.global_question,
+            "section_type": section_type,
+            "global_question": payload.global_question if section_type == "case_scenario" else None,
         },
     )
+    if section_type == "case_scenario" and normalize_section_type(result.get("section_type")) != "case_scenario":
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "The API did not save this as a case-scenario section. "
+                "Restart or redeploy platform_api.py so the new section_type field is available."
+            ),
+        )
+    return result
 
 
 @app.patch("/webapi/admin/test-sections/{section_id}")
 def webapi_admin_update_section(request: Request, section_id: int, payload: SectionUpdateIn):
     token = require_token(request)
+    section_type = normalize_section_type(payload.section_type)
     body = {
         "name": payload.name.strip(),
         "select_count": payload.select_count,
@@ -482,14 +500,23 @@ def webapi_admin_update_section(request: Request, section_id: int, payload: Sect
         "requires_full_score": payload.requires_full_score,
     }
     if payload.section_type is not None:
-        body["section_type"] = payload.section_type
-        body["global_question"] = payload.global_question
-    return api_request(
+        body["section_type"] = section_type
+        body["global_question"] = payload.global_question if section_type == "case_scenario" else None
+    result = api_request(
         token,
         "PATCH",
         f"/admin/test-sections/{section_id}",
         json=body,
     )
+    if payload.section_type is not None and section_type == "case_scenario" and normalize_section_type(result.get("section_type")) != "case_scenario":
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "The API did not save this as a case-scenario section. "
+                "Restart or redeploy platform_api.py so the new section_type field is available."
+            ),
+        )
+    return result
 
 
 @app.patch("/webapi/admin/test-configs/{test_config_id}/sections/reorder")

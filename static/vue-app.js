@@ -1121,7 +1121,7 @@ createApp({
             this.admin.sectionForm.test_config_id = Number(testConfigId) || 0;
         },
         normalizeAdminSection(section) {
-            const sectionType = String(section?.section_type || "regular");
+            const sectionType = String(section?.section_type || "regular").trim().toLowerCase().replace("-", "_");
             return {
                 ...section,
                 section_type: sectionType === "case_scenario" ? "case_scenario" : "regular",
@@ -1480,7 +1480,8 @@ createApp({
                 this.error = "Select count and worth must be at least 1.";
                 return;
             }
-            const sectionType = String(form.section_type || "regular");
+            const sectionTypeRaw = String(form.section_type || "regular").trim().toLowerCase().replace("-", "_");
+            const sectionType = sectionTypeRaw === "case_scenario" ? "case_scenario" : "regular";
             const globalQuestion = String(form.global_question || "").trim();
             if (sectionType === "case_scenario" && !globalQuestion) {
                 this.error = "Global question is required for case-scenario sections.";
