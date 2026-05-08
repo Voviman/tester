@@ -1,6 +1,12 @@
+import argparse
 import os
+import secrets
+import sys
+import threading
+import time
 import tkinter as tk
 from tkinter import messagebox, ttk
+from urllib.parse import quote_plus
 
 import requests
 
@@ -748,6 +754,104 @@ class DesktopPlatformApp(tk.Tk):
         messagebox.showinfo("Success", "Question added.", parent=self)
 
 
+def _repo_root() -> str:
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def run_web_desktop_ui(port: int | None = None) -> None:
+    """Host the same Vue UI as ``web_platform`` locally and show it in a desktop window."""
+    from uvicorn import Config, Server
+
+    resolved_port = int(port or os.getenv("DESKTOP_WEB_PORT", "8787"))
+    repo_root = _repo_root()
+    os.chdir(repo_root)
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
+
+    participation_token = secrets.token_urlsafe(48)
+    os.environ["DESKTOP_PARTICIPATION_TOKEN"] = participation_token
+
+    config = Config(
+        "web_platform:app",
+        host="127.0.0.1",
+        port=resolved_port,
+        log_level="warning",
+    )
+    server = Server(config)
+    threading.Thread(target=server.run, daemon=True).start()
+
+    deadline = time.time() + 25
+    while time.time() < deadline:
+        try:
+            requests.get(f"http://127.0.0.1:{resolved_port}/webapi/session", timeout=0.4)
+            break
+        except requests.RequestException:
+            time.sleep(0.06)
+    else:
+        raise RuntimeError(
+            f"Embedded web UI did not respond on port {resolved_port}. "
+            "Pick another port with --port or set DESKTOP_WEB_PORT."
+        )
+
+    import webview
+
+    entry_url = (
+        f"http://127.0.0.1:{resolved_port}/?desktop_participation={quote_plus(participation_token)}"
+    )
+
+    webview.create_window(
+        "Testing Platform",
+        entry_url,
+        width=1400,
+        height=880,
+        min_size=(1024, 680),
+    )
+    webview.start()
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Testing Platform desktop client")
+    parser.add_argument(
+        "--legacy-tk",
+        action="store_true",
+        help=(
+            "Use the classic Tk interface (catalog + optional in-window test runner). "
+            "Default opens the redesigned Vue/web template in a desktop window."
+        ),
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="Port for embedded web UI (defaults to 8787 or DESKTOP_WEB_PORT). Ignored with --legacy-tk.",
+    )
+    args = parser.parse_args()
+    if args.legacy_tk:
+        app = DesktopPlatformApp()
+        app.mainloop()
+        return
+
+    missing: list[str] = []
+    try:
+        import uvicorn  # noqa: F401
+    except ImportError:
+        missing.append("uvicorn[standard]")
+    try:
+        import webview  # noqa: F401
+    except ImportError:
+        missing.append("pywebview")
+    if missing:
+        print(
+            "Install desktop web UI deps: pip install " + " ".join(missing),
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
+    try:
+        run_web_desktop_ui(port=args.port)
+    except KeyboardInterrupt:
+        raise SystemExit(0) from None
+
+
 if __name__ == "__main__":
-    app = DesktopPlatformApp()
-    app.mainloop()
+    main()

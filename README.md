@@ -104,7 +104,7 @@ uvicorn platform_api:app --host 0.0.0.0 --port 8000 --reload
 This repository now includes both updated client UIs connected to the same backend API:
 
 - `web_platform.py` -> website UI (user dashboard + admin tools)
-- `desktop_client.py` -> updated desktop app UI (shared login, credits, tests, profile stats, admin tools)
+- `desktop_client.py` -> **desktop window** that runs the **same Vue template** as the site (embedded local `web_platform` + [pywebview](https://github.com/r0x0r/pywebview)); use `--legacy-tk` for the older Tk/catalog + test runner
 
 ### Run website UI
 
@@ -117,11 +117,22 @@ uvicorn web_platform:app --host 0.0.0.0 --port 8080 --reload
 
 Open: `http://localhost:8080`
 
-### Run updated desktop UI
+### Run desktop UI (Vue template — default)
+
+Uses the redesigned dashboard/profile/admin experience from `templates/vue_index.html` and `static/`.
 
 ```powershell
-# Optional: point desktop to your deployed backend
+# Optional: point UI to your deployed backend (desktop uses env for the API proxy)
 $env:PLATFORM_API_URL="https://your-api-domain"
 
+# Dependencies (once)
+pip install -r requirements-desktop.txt
+
+# Optional: change embedded server port (default 8787)
+# $env:DESKTOP_WEB_PORT="8790"
+
 python desktop_client.py
+
+# Classic Tk UI (catalog tree + in-window test runner), if you still need it:
+# python desktop_client.py --legacy-tk
 ```

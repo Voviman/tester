@@ -65,6 +65,8 @@ createApp({
             profileIsPublic: false,
             profilePublicRole: "",
             profileTargetUserId: 0,
+            desktopParticipationToken: "",
+            testSession: null,
             admin: {
                 users: [],
                 test_configs: [],
@@ -356,6 +358,28 @@ createApp({
             const v = sum / rows.length;
             return Number.isFinite(v) ? v.toFixed(1) : null;
         },
+        testParticipationActive() {
+            return Boolean(this.testSession && !this.testSession.submitted);
+        },
+        testParticipationCurrentQuestion() {
+            const session = this.testSession;
+            if (!session?.questions?.length) return null;
+            return session.questions[session.currentIndex] ?? null;
+        },
+        testParticipationClock() {
+            const session = this.testSession;
+            if (!session) return "00:00";
+            const total = Math.max(0, Number(session.remainingSeconds || 0));
+            const minutes = Math.floor(total / 60);
+            const seconds = total % 60;
+            return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+        },
+        desktopParticipationAllowed() {
+            return Boolean(String(this.desktopParticipationToken || "").trim());
+        },
+    },
+    created() {
+        this.syncDesktopParticipationFromUrl();
     },
     watch: {
         testFilterTopic() {
@@ -382,6 +406,30 @@ createApp({
             this.testFilterTopic = "";
             this.testFilterLevel = "";
             this.testFilterDuration = "";
+        },
+        syncDesktopParticipationFromUrl() {
+            const storageKey = "desktop_ptoken_v1";
+            try {
+                const url = new URL(window.location.href);
+                const qp = url.searchParams.get("desktop_participation");
+                if (qp) {
+                    const token = decodeURIComponent(qp).trim();
+                    sessionStorage.setItem(storageKey, token);
+                    this.desktopParticipationToken = token;
+                    url.searchParams.delete("desktop_participation");
+                    const qs = url.searchParams.toString();
+                    const next = `${url.pathname}${qs ? `?${qs}` : ""}${url.hash}`;
+                    window.history.replaceState({}, "", next);
+                    return;
+                }
+            } catch (_e) {
+                /* ignore malformed URL */
+            }
+            try {
+                this.desktopParticipationToken = (sessionStorage.getItem(storageKey) || "").trim();
+            } catch (_e2) {
+                this.desktopParticipationToken = "";
+            }
         },
         pathToView(pathname) {
             if (pathname === "/profile") return "profile";
@@ -681,6 +729,154 @@ createApp({
                 topic_name: item.topic_name,
                 level_name: item.level_name,
             });
+        },
+        stopParticipationTimer() {
+            const handle = this.testSession?.timerHandle;
+            if (handle != null) {
+                clearInterval(handle);
+            }
+            if (this.testSession) {
+                this.testSession.timerHandle = null;
+            }
+        },
+        clearParticipationSession() {
+            this.stopParticipationTimer();
+            this.testSession = null;
+        },
+        runParticipationTimerLoop() {
+            const session = this.testSession;
+            if (!session || session.submitted) return;
+            if (session.remainingSeconds <= 0) return;
+            session.remainingSeconds -= 1;
+            if (session.remainingSeconds <= 0) {
+                this.stopParticipationTimer();
+                void this.submitParticipationTest(true);
+            }
+        },
+        startParticipationTimer() {
+            if (!this.testSession || this.testSession.submitted) return;
+            this.stopParticipationTimer();
+            if (this.testSession.remainingSeconds <= 0) {
+                void this.submitParticipationTest(true);
+                return;
+            }
+            this.testSession.timerHandle = setInterval(() => this.runParticipationTimerLoop(), 1000);
+        },
+        participationSelectOption(questionId, optionIndex) {
+            if (!this.testSession || this.testSession.submitted) return;
+            this.testSession.answers[Number(questionId)] = Number(optionIndex);
+        },
+        participationGoPrev() {
+            if (!this.testSession?.questions?.length) return;
+            if (this.testSession.currentIndex > 0) {
+                this.testSession.currentIndex -= 1;
+            }
+        },
+        participationGoNext() {
+            if (!this.testSession?.questions?.length) return;
+            if (this.testSession.currentIndex < this.testSession.questions.length - 1) {
+                this.testSession.currentIndex += 1;
+            }
+        },
+        async startParticipateInTest(testRow) {
+            if (!testRow || this.busy || this.testSession) return;
+            if (!this.authenticated) return;
+            if (!this.desktopParticipationAllowed) {
+                this.error =
+                    "Tests can only be taken from the Testing Platform desktop application.";
+                return;
+            }
+            const questionsCount = Number(testRow.question_count ?? 0);
+            if (questionsCount < 1) {
+                this.error = "This test has no questions yet.";
+                return;
+            }
+            const label = `${testRow.topic_name} - ${testRow.level_name}`;
+            const ok = window.confirm(
+                `Start "${label}" now? One credit is deducted when the session begins.`,
+            );
+            if (!ok) return;
+            this.clearNotices();
+            this.busy = true;
+            try {
+                const data = await this.request("POST", `/webapi/tests/start/${testRow.id}`, null);
+                const questions = Array.isArray(data.questions) ? data.questions : [];
+                this.testSession = {
+                    submitted: false,
+                    attemptId: Number(data.attempt_id),
+                    testConfigId: Number(testRow.id),
+                    title: label,
+                    passingPercent: Number(data.passing_percent ?? testRow.passing_percent ?? 60),
+                    remainingSeconds: Math.max(0, Number(data.duration_seconds ?? testRow.duration_seconds ?? 0)),
+                    questions,
+                    currentIndex: 0,
+                    answers: {},
+                    timerHandle: null,
+                };
+                if (this.me && Number.isFinite(Number(data.remaining_credits))) {
+                    this.me.credits = Number(data.remaining_credits);
+                }
+                this.startParticipationTimer();
+                this.success = `Test started. Pass at or above ${this.testSession.passingPercent.toFixed(2)}%.`;
+            } catch (error) {
+                this.error = error.message;
+            } finally {
+                this.busy = false;
+            }
+        },
+        async submitParticipationTest(forced = false) {
+            const session = this.testSession;
+            if (!session || session.submitted || this.busy) return;
+            if (!this.desktopParticipationAllowed) {
+                this.error =
+                    "Tests can only be taken from the Testing Platform desktop application.";
+                return;
+            }
+            if (!forced) {
+                const confirmed = window.confirm(
+                    "Submit all answers now? Any question without a selection counts as incorrect.",
+                );
+                if (!confirmed) return;
+            }
+            const attemptId = session.attemptId;
+            const remainingSnap = Number(session.remainingSeconds || 0);
+            const answersPayload = {};
+            for (const [key, value] of Object.entries(session.answers)) {
+                const qid = Number(key);
+                if (Number.isFinite(qid)) {
+                    answersPayload[String(qid)] = Number(value);
+                }
+            }
+            this.busy = true;
+            this.stopParticipationTimer();
+            try {
+                const data = await this.request("POST", `/webapi/tests/submit/${attemptId}`, {
+                    answers: answersPayload,
+                });
+                session.submitted = true;
+                const status = data.passed ? "Passed" : "Failed";
+                this.success = `${status} · Score ${data.score}/${data.total_questions} (${Number(
+                    data.success_percent,
+                ).toFixed(2)}%). Credits: ${data.remaining_credits}.`;
+                if (this.me && Number.isFinite(Number(data.remaining_credits))) {
+                    this.me.credits = Number(data.remaining_credits);
+                }
+                this.clearParticipationSession();
+                await this.loadDashboard({ silent: true });
+            } catch (error) {
+                this.error = error.message;
+                if (
+                    this.testSession &&
+                    this.testSession.attemptId === attemptId &&
+                    !this.testSession.submitted &&
+                    !forced &&
+                    remainingSnap > 0
+                ) {
+                    this.startParticipationTimer();
+                }
+            } finally {
+                this.busy = false;
+            }
         },
         commentVisibleCount(testId) {
             return this.commentVisibleCounts[testId] || 2;
@@ -1149,6 +1345,10 @@ createApp({
                 options.headers["Content-Type"] = "application/json";
                 options.body = JSON.stringify(payload);
             }
+            const dp = String(this.desktopParticipationToken || "").trim();
+            if (dp) {
+                options.headers["X-Desktop-Participation"] = dp;
+            }
 
             const response = await fetch(url, options);
             let data = {};
@@ -1196,6 +1396,12 @@ createApp({
         },
         async setView(view, fromPopState = false, options = {}) {
             const { profileUserId = null } = options;
+            if (this.testParticipationActive) {
+                if (!fromPopState) {
+                    this.error = "Finish or submit your in-progress test before switching views.";
+                }
+                return;
+            }
             if (view === "admin" && !this.isAdmin) {
                 this.error = "Admin access required.";
                 return;
@@ -1267,6 +1473,10 @@ createApp({
             }
         },
         async logout() {
+            if (this.testParticipationActive) {
+                this.error = "Submit your in-progress test before logging out.";
+                return;
+            }
             this.clearNotices();
             try {
                 await this.request("POST", "/webapi/logout", {});

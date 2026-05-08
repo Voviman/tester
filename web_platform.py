@@ -94,6 +94,22 @@ def require_token(request: Request) -> str:
     return token
 
 
+def check_desktop_test_participation(request: Request) -> None:
+    """Only the desktop shell can start/submit timed tests via this web proxy."""
+    expected = os.getenv("DESKTOP_PARTICIPATION_TOKEN")
+    if not expected:
+        raise HTTPException(
+            status_code=403,
+            detail="Test participation via this UI is restricted to the desktop client.",
+        )
+    incoming = request.headers.get("x-desktop-participation", "")
+    if not incoming or incoming != expected:
+        raise HTTPException(
+            status_code=403,
+            detail="Test participation requires the Testing Platform desktop application.",
+        )
+
+
 def api_request(
     token: str | None,
     method: str,
@@ -306,6 +322,24 @@ def webapi_follow(request: Request, target_user_id: int):
 def webapi_unfollow(request: Request, target_user_id: int):
     token = require_token(request)
     return api_request(token, "DELETE", f"/social/follow/{target_user_id}")
+
+
+class TestSubmitAnswersIn(BaseModel):
+    answers: dict[str, Any]
+
+
+@app.post("/webapi/tests/start/{test_config_id}")
+def webapi_tests_start(request: Request, test_config_id: int):
+    check_desktop_test_participation(request)
+    token = require_token(request)
+    return api_request(token, "POST", f"/tests/start/{test_config_id}")
+
+
+@app.post("/webapi/tests/submit/{attempt_id}")
+def webapi_tests_submit(request: Request, attempt_id: int, payload: TestSubmitAnswersIn):
+    check_desktop_test_participation(request)
+    token = require_token(request)
+    return api_request(token, "POST", f"/tests/submit/{attempt_id}", json=payload.model_dump())
 
 
 @app.get("/webapi/community/users/{user_id}/profile")

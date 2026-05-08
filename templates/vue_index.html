@@ -15,21 +15,37 @@
             <div class="app-header-inner">
                 <div class="brand">Testing Platform</div>
                 <nav class="app-nav">
-                    <button class="nav-btn" :class="{active: view==='dashboard'}" @click="setView('dashboard')">Dashboard</button>
+                    <button
+                        class="nav-btn"
+                        :class="{ active: view === 'dashboard' }"
+                        @click="setView('dashboard')"
+                        :disabled="testParticipationActive"
+                    >
+                        Dashboard
+                    </button>
                     <button
                         class="nav-btn nav-icon-btn"
-                        :class="{active: view==='profile'}"
+                        :class="{ active: view === 'profile' }"
                         @click="setView('profile')"
+                        :disabled="testParticipationActive"
                         aria-label="Profile"
                         title="Profile"
                     >
                         <i class="bi bi-person-circle icon" aria-hidden="true"></i>
                     </button>
-                    <button v-if="isAdmin" class="nav-btn" :class="{active: view==='admin'}" @click="setView('admin')">Admin</button>
+                    <button
+                        v-if="isAdmin"
+                        class="nav-btn"
+                        :class="{ active: view === 'admin' }"
+                        @click="setView('admin')"
+                        :disabled="testParticipationActive"
+                    >
+                        Admin
+                    </button>
                 </nav>
                 <div class="header-right">
                     <span class="user-pill">{{ me?.username }}</span>
-                    <button class="btn secondary" @click="logout">Logout</button>
+                    <button class="btn secondary" :disabled="testParticipationActive" @click="logout">Logout</button>
                 </div>
             </div>
         </header>
@@ -52,6 +68,12 @@
             <section v-else>
                 <div v-if="success" class="alert success">{{ success }}</div>
                 <div v-if="error" class="alert error">{{ error }}</div>
+                <p
+                    v-if="view === 'dashboard' && !desktopParticipationAllowed"
+                    class="muted small dashboard-participate-hint"
+                >
+                    Timed tests can only be taken from the Testing Platform <strong>desktop client</strong>.
+                </p>
 
                 <section v-if="view==='dashboard'" class="dashboard-grid">
                     <aside class="filter-col panel filter-menu-panel" aria-label="Filter tests">
@@ -134,7 +156,7 @@
                                 class="test-card"
                             >
                                 <div class="test-top test-top-geo" :style="testCardGeometricBackground(test)">
-                                    <div>
+                                    <div class="test-top-main">
                                         <h3 class="test-title">{{ test.topic_name }} - {{ test.level_name }}</h3>
                                         <div class="test-meta">
                                             <span class="meta-chip meta-time">Time {{ Math.floor(test.duration_seconds / 60) }} min</span>
@@ -143,6 +165,25 @@
                                                 {{ test.question_count }} {{ test.question_count === 1 ? 'question' : 'questions' }}
                                             </span>
                                         </div>
+                                    </div>
+                                    <div v-if="desktopParticipationAllowed" class="test-top-actions">
+                                        <button
+                                            type="button"
+                                            class="btn primary test-participate-start"
+                                            @click="startParticipateInTest(test)"
+                                            :disabled="
+                                                busy ||
+                                                testParticipationActive ||
+                                                Number(test.question_count || 0) < 1
+                                            "
+                                            :title="
+                                                Number(test.question_count || 0) < 1
+                                                    ? 'This test has no questions yet.'
+                                                    : 'Use one credit to begin this timed test.'
+                                            "
+                                        >
+                                            Take test
+                                        </button>
                                     </div>
                                 </div>
 
@@ -941,6 +982,77 @@
                 </section>
             </section>
         </main>
+
+        <div
+            v-if="testParticipationActive"
+            class="test-participate-shell"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="test-part-heading"
+        >
+            <div class="test-participate-panel">
+                <header class="test-participate-head">
+                    <div>
+                        <h2 id="test-part-heading">{{ testSession.title }}</h2>
+                        <p class="muted small test-part-meta">
+                            Pass at or above {{ Number(testSession.passingPercent).toFixed(2) }}% · Question
+                            {{ testSession.currentIndex + 1 }} / {{ testSession.questions.length }}
+                        </p>
+                    </div>
+                    <div
+                        class="test-participate-timer"
+                        :class="{ 'test-participate-timer--warn': testSession.remainingSeconds <= 60 }"
+                    >
+                        {{ testParticipationClock }}
+                    </div>
+                </header>
+                <div v-if="testParticipationCurrentQuestion" class="test-participate-body">
+                    <p class="test-participate-prompt">{{ testParticipationCurrentQuestion.question_text }}</p>
+                    <div class="test-participate-options">
+                        <label
+                            v-for="(opt, idx) in testParticipationCurrentQuestion.options"
+                            :key="idx"
+                            class="test-participate-option"
+                            :class="{
+                                'test-participate-option--picked':
+                                    testSession.answers[testParticipationCurrentQuestion.id] === idx,
+                            }"
+                        >
+                            <input
+                                type="radio"
+                                class="test-participate-radio"
+                                :name="'participate-q-' + testParticipationCurrentQuestion.id"
+                                :checked="testSession.answers[testParticipationCurrentQuestion.id] === idx"
+                                @change="participationSelectOption(testParticipationCurrentQuestion.id, idx)"
+                            >
+                            <span class="test-participate-option-text">{{ optionLetter(idx) }}. {{ opt }}</span>
+                        </label>
+                    </div>
+                </div>
+                <div v-else class="empty test-participate-empty">Loading question…</div>
+                <footer class="test-participate-foot">
+                    <button
+                        type="button"
+                        class="btn secondary"
+                        @click="participationGoPrev"
+                        :disabled="busy || testSession.currentIndex <= 0"
+                    >
+                        Previous
+                    </button>
+                    <button
+                        type="button"
+                        class="btn secondary"
+                        @click="participationGoNext"
+                        :disabled="busy || testSession.currentIndex >= testSession.questions.length - 1"
+                    >
+                        Next
+                    </button>
+                    <button type="button" class="btn primary" @click="submitParticipationTest(false)" :disabled="busy">
+                        Submit test
+                    </button>
+                </footer>
+            </div>
+        </div>
     </div>
     {% endraw %}
 
