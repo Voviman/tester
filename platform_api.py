@@ -951,7 +951,7 @@ def on_startup():
         if "test_sections" in columns_by_table and "order_index" not in section_columns:
             conn.execute(text("ALTER TABLE test_sections ADD COLUMN order_index INTEGER DEFAULT 0"))
         if "test_sections" in columns_by_table and "requires_full_score" not in section_columns:
-            conn.execute(text("ALTER TABLE test_sections ADD COLUMN requires_full_score BOOLEAN DEFAULT 0"))
+            conn.execute(text("ALTER TABLE test_sections ADD COLUMN requires_full_score BOOLEAN DEFAULT FALSE"))
 
 
 @app.get("/health")
