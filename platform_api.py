@@ -14,7 +14,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, create_engine, delete, func, inspect, select, text
-from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, selectinload, sessionmaker
 
 
 def normalize_database_url(url: str) -> str:
@@ -153,6 +153,7 @@ class Attempt(Base):
     total_questions: Mapped[int] = mapped_column(Integer, default=0)
     max_score: Mapped[int] = mapped_column(Integer, default=0)
     selected_question_ids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    option_orders_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     passed: Mapped[bool] = mapped_column(Boolean, default=False)
 
     user: Mapped[User] = relationship(back_populates="attempts")
@@ -269,6 +270,42 @@ def parse_selected_question_ids(raw_value: str | None) -> list[int]:
         except (TypeError, ValueError):
             continue
     return ids
+
+
+def parse_option_orders(raw_value: str | None) -> dict[int, list[int]]:
+    if not raw_value:
+        return {}
+    try:
+        value = json.loads(raw_value)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(value, dict):
+        return {}
+    result: dict[int, list[int]] = {}
+    for raw_question_id, raw_order in value.items():
+        try:
+            question_id = int(raw_question_id)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(raw_order, list):
+            continue
+        order = []
+        for item in raw_order:
+            try:
+                order.append(int(item))
+            except (TypeError, ValueError):
+                continue
+        if order:
+            result[question_id] = order
+    return result
+
+
+def shuffled_option_order(option_count: int, randomizer: secrets.SystemRandom) -> list[int]:
+    order = list(range(option_count))
+    randomizer.shuffle(order)
+    if option_count > 1 and order == list(range(option_count)):
+        order = order[1:] + order[:1]
+    return order
 
 
 def parse_options(options_json: str, fallback_correct_index: int | None = None) -> list[str]:
@@ -446,6 +483,13 @@ class UserAdminStatsOut(BaseModel):
     failed_tests: int
     success_rate_percent: float
     attempts: list[AttemptAdminOut]
+
+
+class AdminOverviewOut(BaseModel):
+    users: list[UserOut]
+    test_configs: list[TestConfigOut]
+    sections: list[TestSectionOut]
+    questions: list[QuestionAdminOut]
 
 
 class UserAdminUpdateIn(BaseModel):
@@ -648,6 +692,10 @@ def serialize_social_comment(comment: TestComment, username: str) -> SocialComme
 def build_social_dashboard(db: Session, current_user: User) -> SocialDashboardOut:
     tests = db.scalars(
         select(TestConfig)
+        .options(
+            selectinload(TestConfig.questions),
+            selectinload(TestConfig.sections).selectinload(TestSection.questions),
+        )
         .where(TestConfig.is_active.is_(True))
         .order_by(TestConfig.topic_name.asc(), TestConfig.level_name.asc())
     ).all()
@@ -876,6 +924,8 @@ def on_startup():
             conn.execute(text("ALTER TABLE attempts ADD COLUMN max_score INTEGER DEFAULT 0"))
         if "attempts" in columns_by_table and "selected_question_ids_json" not in attempt_columns:
             conn.execute(text("ALTER TABLE attempts ADD COLUMN selected_question_ids_json TEXT"))
+        if "attempts" in columns_by_table and "option_orders_json" not in attempt_columns:
+            conn.execute(text("ALTER TABLE attempts ADD COLUMN option_orders_json TEXT"))
 
 
 @app.get("/health")
@@ -934,6 +984,34 @@ def admin_list_users(
 ):
     users = db.scalars(select(User).order_by(User.id.asc())).all()
     return [serialize_user(user) for user in users]
+
+
+@app.get("/admin/overview", response_model=AdminOverviewOut)
+def admin_overview(
+    _: Annotated[User, Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))],
+    db: Annotated[Session, Depends(get_db)],
+):
+    users = db.scalars(select(User).order_by(User.id.asc())).all()
+    configs = db.scalars(
+        select(TestConfig)
+        .options(
+            selectinload(TestConfig.questions),
+            selectinload(TestConfig.sections).selectinload(TestSection.questions),
+        )
+        .order_by(TestConfig.topic_name, TestConfig.level_name)
+    ).all()
+    sections = db.scalars(
+        select(TestSection)
+        .options(selectinload(TestSection.questions))
+        .order_by(TestSection.test_config_id, TestSection.id)
+    ).all()
+    questions = db.scalars(select(Question).order_by(Question.id.desc())).all()
+    return AdminOverviewOut(
+        users=[serialize_user(user) for user in users],
+        test_configs=[serialize_test_config(config) for config in configs],
+        sections=[serialize_test_section(section) for section in sections],
+        questions=[serialize_question_admin(question) for question in questions],
+    )
 
 
 @app.get("/admin/users/{user_id}/stats", response_model=UserAdminStatsOut)
@@ -1113,7 +1191,14 @@ def admin_list_test_configs(
     _: Annotated[User, Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))],
     db: Annotated[Session, Depends(get_db)],
 ):
-    configs = db.scalars(select(TestConfig).order_by(TestConfig.topic_name, TestConfig.level_name)).all()
+    configs = db.scalars(
+        select(TestConfig)
+        .options(
+            selectinload(TestConfig.questions),
+            selectinload(TestConfig.sections).selectinload(TestSection.questions),
+        )
+        .order_by(TestConfig.topic_name, TestConfig.level_name)
+    ).all()
     return [serialize_test_config(config) for config in configs]
 
 
@@ -1203,7 +1288,7 @@ def admin_list_test_sections(
     db: Annotated[Session, Depends(get_db)],
     test_config_id: int | None = Query(default=None),
 ):
-    query = select(TestSection).order_by(TestSection.test_config_id, TestSection.id)
+    query = select(TestSection).options(selectinload(TestSection.questions)).order_by(TestSection.test_config_id, TestSection.id)
     if test_config_id is not None:
         query = query.where(TestSection.test_config_id == test_config_id)
     sections = db.scalars(query).all()
@@ -1378,7 +1463,13 @@ def user_list_test_catalog(
     db: Annotated[Session, Depends(get_db)],
 ):
     configs = db.scalars(
-        select(TestConfig).where(TestConfig.is_active.is_(True)).order_by(TestConfig.topic_name, TestConfig.level_name)
+        select(TestConfig)
+        .options(
+            selectinload(TestConfig.questions),
+            selectinload(TestConfig.sections).selectinload(TestSection.questions),
+        )
+        .where(TestConfig.is_active.is_(True))
+        .order_by(TestConfig.topic_name, TestConfig.level_name)
     ).all()
     return [serialize_test_config(config) for config in configs]
 
@@ -1414,6 +1505,19 @@ def user_start_test(
     max_score = sum(
         (question.section.points_per_question if question.section is not None else 1) for question in selected_questions
     )
+    question_payloads = []
+    option_orders: dict[str, list[int]] = {}
+    for question in selected_questions:
+        options = parse_options(question.options_json, question.correct_index)
+        order = shuffled_option_order(len(options), randomizer)
+        option_orders[str(question.id)] = order
+        question_payloads.append(
+            QuestionPublicOut(
+                id=question.id,
+                question_text=question.question_text,
+                options=[options[index] for index in order],
+            )
+        )
 
     current_user.credits -= 1
     attempt = Attempt(
@@ -1423,25 +1527,18 @@ def user_start_test(
         total_questions=len(selected_questions),
         max_score=max_score,
         selected_question_ids_json=json.dumps(selected_question_ids),
+        option_orders_json=json.dumps(option_orders),
     )
     db.add(attempt)
     db.commit()
     db.refresh(attempt)
 
-    questions_out = [
-        QuestionPublicOut(
-            id=question.id,
-            question_text=question.question_text,
-            options=parse_options(question.options_json),
-        )
-        for question in selected_questions
-    ]
     return TestStartOut(
         attempt_id=attempt.id,
         duration_seconds=config.duration_seconds,
         passing_percent=config.passing_percent,
         remaining_credits=current_user.credits,
-        questions=questions_out,
+        questions=question_payloads,
     )
 
 
@@ -1475,9 +1572,11 @@ def user_submit_test(
     total_questions = len(questions)
     max_score = sum((question.section.points_per_question if question.section is not None else 1) for question in questions)
     answer_map = payload.answers
+    option_orders = parse_option_orders(attempt.option_orders_json)
 
     for question in questions:
         _, correct_indices = parse_question_payload(question.options_json, question.correct_index)
+        option_order = option_orders.get(question.id)
         selected_raw = answer_map.get(question.id, -1)
         if isinstance(selected_raw, list):
             selected_indices = sorted({int(item) for item in selected_raw if isinstance(item, int) and item >= 0})
@@ -1485,6 +1584,14 @@ def user_submit_test(
             selected_indices = [selected_raw]
         else:
             selected_indices = []
+        if option_order:
+            selected_indices = sorted(
+                {
+                    option_order[item]
+                    for item in selected_indices
+                    if item >= 0 and item < len(option_order)
+                }
+            )
         if selected_indices == correct_indices:
             score += question.section.points_per_question if question.section is not None else 1
 

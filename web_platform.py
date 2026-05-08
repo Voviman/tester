@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import requests
+from requests.adapters import HTTPAdapter
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -12,6 +13,11 @@ from pydantic import BaseModel, Field
 
 API_BASE_URL = os.getenv("PLATFORM_API_URL", "https://tester-pykb.onrender.com").rstrip("/")
 COOKIE_NAME = "platform_token"
+
+API_SESSION = requests.Session()
+API_ADAPTER = HTTPAdapter(pool_connections=20, pool_maxsize=50, max_retries=0)
+API_SESSION.mount("http://", API_ADAPTER)
+API_SESSION.mount("https://", API_ADAPTER)
 
 app = FastAPI(title="Testing Platform Web UI (Vue)", version="2.0.0")
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -141,7 +147,7 @@ def api_request(
         headers["Authorization"] = f"Bearer {token}"
 
     try:
-        response = requests.request(
+        response = API_SESSION.request(
             method=method,
             url=f"{API_BASE_URL}{path}",
             headers=headers,
@@ -365,39 +371,25 @@ def webapi_community_user_profile(request: Request, user_id: int):
 
 @app.get("/webapi/admin/overview")
 def webapi_admin_overview(request: Request):
-    token, _ = require_admin(request)
-    data = api_get_many(
-        token,
-        {
-            "users": "/admin/users",
-            "test_configs": "/admin/test-configs",
-            "sections": "/admin/test-sections",
-            "questions": "/admin/questions",
-        },
-        optional_keys={"questions", "sections"},
-    )
-    users = data["users"]
-    test_configs = data["test_configs"]
-    sections = data["sections"]
-    questions = data["questions"]
-    return {"users": users, "test_configs": test_configs, "sections": sections, "questions": questions}
+    token = require_token(request)
+    return api_request(token, "GET", "/admin/overview")
 
 
 @app.get("/webapi/admin/users/{user_id}/stats")
 def webapi_admin_user_stats(request: Request, user_id: int):
-    token, _ = require_admin(request)
+    token = require_token(request)
     return api_request(token, "GET", f"/admin/users/{user_id}/stats")
 
 
 @app.post("/webapi/admin/users")
 def webapi_admin_create_user(request: Request, payload: AdminUserCreateIn):
-    token, _ = require_admin(request)
+    token = require_token(request)
     return api_request(token, "POST", "/admin/users", json=payload.model_dump())
 
 
 @app.patch("/webapi/admin/users/{user_id}")
 def webapi_admin_update_user(request: Request, user_id: int, payload: AdminUserUpdateIn):
-    token, _ = require_admin(request)
+    token = require_token(request)
     data = payload.model_dump()
     if not data.get("role"):
         data.pop("role", None)
@@ -408,19 +400,19 @@ def webapi_admin_update_user(request: Request, user_id: int, payload: AdminUserU
 
 @app.patch("/webapi/admin/users/{user_id}/credits")
 def webapi_admin_add_credits(request: Request, user_id: int, payload: CreditsIn):
-    token, _ = require_admin(request)
+    token = require_token(request)
     return api_request(token, "PATCH", f"/admin/users/{user_id}/credits", json=payload.model_dump())
 
 
 @app.delete("/webapi/admin/users/{user_id}")
 def webapi_admin_delete_user(request: Request, user_id: int):
-    token, _ = require_admin(request)
+    token = require_token(request)
     return api_request(token, "DELETE", f"/admin/users/{user_id}")
 
 
 @app.post("/webapi/admin/test-configs")
 def webapi_admin_create_config(request: Request, payload: ConfigCreateIn):
-    token, _ = require_admin(request)
+    token = require_token(request)
     return api_request(
         token,
         "POST",
@@ -437,7 +429,7 @@ def webapi_admin_create_config(request: Request, payload: ConfigCreateIn):
 
 @app.patch("/webapi/admin/test-configs/{test_config_id}")
 def webapi_admin_update_config(request: Request, test_config_id: int, payload: ConfigUpdateIn):
-    token, _ = require_admin(request)
+    token = require_token(request)
     return api_request(
         token,
         "PATCH",
@@ -454,13 +446,13 @@ def webapi_admin_update_config(request: Request, test_config_id: int, payload: C
 
 @app.delete("/webapi/admin/test-configs/{test_config_id}")
 def webapi_admin_delete_config(request: Request, test_config_id: int):
-    token, _ = require_admin(request)
+    token = require_token(request)
     return api_request(token, "DELETE", f"/admin/test-configs/{test_config_id}")
 
 
 @app.post("/webapi/admin/test-sections")
 def webapi_admin_create_section(request: Request, payload: SectionCreateIn):
-    token, _ = require_admin(request)
+    token = require_token(request)
     return api_request(
         token,
         "POST",
@@ -476,7 +468,7 @@ def webapi_admin_create_section(request: Request, payload: SectionCreateIn):
 
 @app.patch("/webapi/admin/test-sections/{section_id}")
 def webapi_admin_update_section(request: Request, section_id: int, payload: SectionUpdateIn):
-    token, _ = require_admin(request)
+    token = require_token(request)
     return api_request(
         token,
         "PATCH",
@@ -491,13 +483,13 @@ def webapi_admin_update_section(request: Request, section_id: int, payload: Sect
 
 @app.delete("/webapi/admin/test-sections/{section_id}")
 def webapi_admin_delete_section(request: Request, section_id: int):
-    token, _ = require_admin(request)
+    token = require_token(request)
     return api_request(token, "DELETE", f"/admin/test-sections/{section_id}")
 
 
 @app.post("/webapi/admin/questions")
 def webapi_admin_create_question(request: Request, payload: QuestionCreateIn):
-    token, _ = require_admin(request)
+    token = require_token(request)
     clean_options = [item.strip() for item in payload.options]
     clean_correct_indices = sorted({int(item) for item in payload.correct_indices})
     return api_request(
@@ -516,7 +508,7 @@ def webapi_admin_create_question(request: Request, payload: QuestionCreateIn):
 
 @app.patch("/webapi/admin/questions/{question_id}")
 def webapi_admin_update_question(request: Request, question_id: int, payload: QuestionUpdateIn):
-    token, _ = require_admin(request)
+    token = require_token(request)
     clean_options = [item.strip() for item in payload.options]
     clean_correct_indices = sorted({int(item) for item in payload.correct_indices})
     return api_request(
@@ -534,13 +526,13 @@ def webapi_admin_update_question(request: Request, question_id: int, payload: Qu
 
 @app.delete("/webapi/admin/questions/{question_id}")
 def webapi_admin_delete_question(request: Request, question_id: int):
-    token, _ = require_admin(request)
+    token = require_token(request)
     return api_request(token, "DELETE", f"/admin/questions/{question_id}")
 
 
 @app.post("/webapi/admin/test-builder")
 def webapi_admin_test_builder(request: Request, payload: TestBuilderIn):
-    token, _ = require_admin(request)
+    token = require_token(request)
 
     api_request(
         token,

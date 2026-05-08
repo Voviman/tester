@@ -22,6 +22,7 @@ class PlatformAPIClient:
     def __init__(self, base_url: str):
         self.base_url = base_url
         self.token: str | None = None
+        self.session = requests.Session()
 
     def _request(
         self,
@@ -38,7 +39,7 @@ class PlatformAPIClient:
                 raise APIError("Not authenticated.")
             headers["Authorization"] = f"Bearer {self.token}"
         try:
-            response = requests.request(
+            response = self.session.request(
                 method=method,
                 url=f"{self.base_url}{path}",
                 headers=headers,
