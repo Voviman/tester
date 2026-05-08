@@ -779,9 +779,23 @@
                                             <span>Points each</span>
                                             <input v-model.number="admin.sectionForm.points_per_question" type="number" min="1">
                                         </label>
+                                        <label class="admin-section-field">
+                                            <span>Type</span>
+                                            <select v-model="admin.sectionForm.section_type">
+                                                <option value="regular">Regular</option>
+                                                <option value="case_scenario">Case-Scenario</option>
+                                            </select>
+                                        </label>
                                         <label class="admin-section-toggle" title="If enabled, this section earns points only when every shown question is correct.">
                                             <input v-model="admin.sectionForm.requires_full_score" type="checkbox">
                                             <span>100% required</span>
+                                        </label>
+                                        <label
+                                            v-if="admin.sectionForm.section_type === 'case_scenario'"
+                                            class="admin-section-field admin-section-global-field"
+                                        >
+                                            <span>Global question</span>
+                                            <textarea v-model.trim="admin.sectionForm.global_question" rows="3" placeholder="Shared case details or scenario prompt"></textarea>
                                         </label>
                                         <button class="btn secondary small" type="button" @click="submitAdminSection()" :disabled="busy">
                                             Add Section
@@ -819,9 +833,23 @@
                                                 <span>Points each</span>
                                                 <input v-model.number="section.points_per_question" type="number" min="1" aria-label="Points each">
                                             </label>
+                                            <label class="admin-section-field">
+                                                <span>Type</span>
+                                                <select v-model="section.section_type" aria-label="Section type">
+                                                    <option value="regular">Regular</option>
+                                                    <option value="case_scenario">Case-Scenario</option>
+                                                </select>
+                                            </label>
                                             <label class="admin-section-toggle" title="If enabled, this section earns points only when every shown question is correct.">
                                                 <input v-model="section.requires_full_score" type="checkbox" aria-label="Require 100 percent correct in section">
                                                 <span>100% required</span>
+                                            </label>
+                                            <label
+                                                v-if="section.section_type === 'case_scenario'"
+                                                class="admin-section-field admin-section-global-field"
+                                            >
+                                                <span>Global question</span>
+                                                <textarea v-model.trim="section.global_question" rows="3" aria-label="Global question"></textarea>
                                             </label>
                                             <span class="admin-section-bank">{{ section.question_count }} in bank</span>
                                             <div class="admin-section-actions">
@@ -846,7 +874,15 @@
                                         class="admin-question-group"
                                     >
                                         <div class="admin-question-group-head">
-                                            <h3>{{ group.name }}</h3>
+                                            <div>
+                                                <h3>{{ group.name }}</h3>
+                                                <p
+                                                    v-if="group.section?.section_type === 'case_scenario' && group.section?.global_question"
+                                                    class="admin-section-scenario-preview"
+                                                >
+                                                    {{ group.section.global_question }}
+                                                </p>
+                                            </div>
                                             <span class="small muted">{{ group.questions.length }} in bank</span>
                                         </div>
                                         <div class="admin-question-table-wrap">
@@ -1111,6 +1147,12 @@
                     {{ testSession.lastViolationReason }}
                 </div>
                 <div v-if="testParticipationCurrentQuestion" class="test-participate-body">
+                    <div v-if="testParticipationCurrentScenario" class="test-participate-scenario">
+                        <div class="test-participate-scenario-label">
+                            {{ testParticipationCurrentQuestion.section_name || 'Case Scenario' }}
+                        </div>
+                        <p>{{ testParticipationCurrentScenario }}</p>
+                    </div>
                     <p class="test-participate-prompt">{{ testParticipationCurrentQuestion.question_text }}</p>
                     <p v-if="testParticipationCurrentQuestion.allow_multiple" class="muted small test-participate-multi-note">
                         Select all correct options.

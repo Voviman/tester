@@ -125,6 +125,8 @@ createApp({
                     select_count: 1,
                     points_per_question: 1,
                     requires_full_score: false,
+                    section_type: "regular",
+                    global_question: "",
                 },
                 draggingSectionId: 0,
                 confirmModalOpen: false,
@@ -421,6 +423,11 @@ createApp({
             const session = this.testSession;
             if (!session?.questions?.length) return null;
             return session.questions[session.currentIndex] ?? null;
+        },
+        testParticipationCurrentScenario() {
+            const question = this.testParticipationCurrentQuestion;
+            if (question?.section_type !== "case_scenario") return "";
+            return String(question.global_question || "").trim();
         },
         testParticipationClock() {
             const session = this.testSession;
@@ -1113,6 +1120,15 @@ createApp({
             this.admin.selectedTestConfigId = Number(testConfigId) || 0;
             this.admin.sectionForm.test_config_id = Number(testConfigId) || 0;
         },
+        normalizeAdminSection(section) {
+            const sectionType = String(section?.section_type || "regular");
+            return {
+                ...section,
+                section_type: sectionType === "case_scenario" ? "case_scenario" : "regular",
+                global_question: String(section?.global_question || ""),
+                requires_full_score: Boolean(section?.requires_full_score),
+            };
+        },
         async selectAdminUser(userId) {
             this.admin.selectedUserId = Number(userId) || 0;
             if (this.admin.userFormMode === "update") {
@@ -1161,6 +1177,8 @@ createApp({
                 select_count: 1,
                 points_per_question: 1,
                 requires_full_score: false,
+                section_type: "regular",
+                global_question: "",
             };
         },
         resetAdminTestForm() {
@@ -1289,6 +1307,9 @@ createApp({
                 name: String(section.name || ""),
                 select_count: Number(section.select_count || 1),
                 points_per_question: Number(section.points_per_question || 1),
+                section_type: String(section.section_type || "regular"),
+                global_question: String(section.global_question || ""),
+                requires_full_score: Boolean(section.requires_full_score),
             };
             this.openConfirmModal(
                 "Delete Section",
@@ -1443,6 +1464,8 @@ createApp({
                       points_per_question: Number(section.points_per_question || 1),
                       order_index: Number(section.order_index || 0),
                       requires_full_score: Boolean(section.requires_full_score),
+                      section_type: String(section.section_type || "regular"),
+                      global_question: String(section.global_question || ""),
                   }
                 : this.admin.sectionForm;
             if (!form.test_config_id) {
@@ -1457,12 +1480,20 @@ createApp({
                 this.error = "Select count and worth must be at least 1.";
                 return;
             }
+            const sectionType = String(form.section_type || "regular");
+            const globalQuestion = String(form.global_question || "").trim();
+            if (sectionType === "case_scenario" && !globalQuestion) {
+                this.error = "Global question is required for case-scenario sections.";
+                return;
+            }
             const payload = {
                 test_config_id: Number(form.test_config_id),
                 name: String(form.name).trim(),
                 select_count: Number(form.select_count),
                 points_per_question: Number(form.points_per_question),
                 requires_full_score: Boolean(form.requires_full_score),
+                section_type: sectionType,
+                global_question: sectionType === "case_scenario" ? globalQuestion : null,
             };
             this.busy = true;
             try {
@@ -1472,6 +1503,8 @@ createApp({
                         select_count: payload.select_count,
                         points_per_question: payload.points_per_question,
                         requires_full_score: payload.requires_full_score,
+                        section_type: payload.section_type,
+                        global_question: payload.global_question,
                     });
                     this.success = "Section updated.";
                 } else {
@@ -1988,7 +2021,7 @@ createApp({
             try {
                 const data = await this.request("GET", "/webapi/admin/overview");
                 this.admin.users = data.users || [];
-                this.admin.sections = data.sections || [];
+                this.admin.sections = (data.sections || []).map((section) => this.normalizeAdminSection(section));
                 this.admin.questions = data.questions || [];
                 this.admin.test_configs = (data.test_configs || []).map((item) => ({
                     ...item,

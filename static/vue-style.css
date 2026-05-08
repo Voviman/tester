@@ -406,6 +406,30 @@ body {
     color: var(--text);
 }
 
+.test-participate-scenario {
+    margin: 0 0 16px;
+    padding: 12px 14px;
+    border: 1px solid #cbdcf3;
+    border-radius: 10px;
+    background: #f8fbff;
+}
+
+.test-participate-scenario-label {
+    margin-bottom: 6px;
+    color: #1d4ed8;
+    font-size: 12px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+
+.test-participate-scenario p {
+    margin: 0;
+    color: #334155;
+    line-height: 1.5;
+    white-space: pre-wrap;
+}
+
 .test-participate-multi-note {
     margin: -8px 0 14px;
 }
@@ -1590,7 +1614,7 @@ body {
 .admin-section-form,
 .admin-section-row {
     display: grid;
-    grid-template-columns: minmax(220px, 1fr) 142px 118px 128px auto;
+    grid-template-columns: minmax(220px, 1fr) 142px 118px 148px 128px auto;
     gap: 10px;
     align-items: end;
 }
@@ -1601,7 +1625,7 @@ body {
 }
 
 .admin-section-row {
-    grid-template-columns: 42px minmax(220px, 1fr) 142px 118px 128px 92px 92px;
+    grid-template-columns: 42px minmax(220px, 1fr) 142px 118px 148px 128px 92px 92px;
     padding: 10px 0;
     border-top: 1px solid #e2e8f0;
     align-items: end;
@@ -1639,9 +1663,23 @@ body {
     font-weight: 700;
 }
 
-.admin-section-field input {
+.admin-section-field input,
+.admin-section-field select {
     min-width: 0;
     height: 38px;
+}
+
+.admin-section-field textarea {
+    min-width: 0;
+    resize: vertical;
+}
+
+.admin-section-global-field {
+    grid-column: 1 / -2;
+}
+
+.admin-section-row .admin-section-global-field {
+    grid-column: 2 / -3;
 }
 
 .admin-section-toggle {
@@ -1735,6 +1773,15 @@ body {
 .admin-question-group-head h3 {
     margin: 0;
     font-size: 14px;
+}
+
+.admin-section-scenario-preview {
+    margin: 5px 0 0;
+    max-width: 760px;
+    color: #475569;
+    font-size: 12px;
+    line-height: 1.4;
+    white-space: pre-wrap;
 }
 
 .admin-question-table {

@@ -156,7 +156,15 @@ class PlatformAPIClient:
     def admin_test_sections(self):
         return self._request("GET", "/admin/test-sections")
 
-    def admin_add_test_section(self, test_config_id: int, name: str, select_count: int, points_per_question: int):
+    def admin_add_test_section(
+        self,
+        test_config_id: int,
+        name: str,
+        select_count: int,
+        points_per_question: int,
+        section_type: str = "regular",
+        global_question: str | None = None,
+    ):
         return self._request(
             "POST",
             "/admin/test-sections",
@@ -165,6 +173,31 @@ class PlatformAPIClient:
                 "name": name,
                 "select_count": select_count,
                 "points_per_question": points_per_question,
+                "section_type": section_type,
+                "global_question": global_question,
+            },
+        )
+
+    def admin_update_test_section(
+        self,
+        section_id: int,
+        name: str,
+        select_count: int,
+        points_per_question: int,
+        requires_full_score: bool,
+        section_type: str,
+        global_question: str | None,
+    ):
+        return self._request(
+            "PATCH",
+            f"/admin/test-sections/{section_id}",
+            json={
+                "name": name,
+                "select_count": select_count,
+                "points_per_question": points_per_question,
+                "requires_full_score": requires_full_score,
+                "section_type": section_type,
+                "global_question": global_question,
             },
         )
 
@@ -196,6 +229,9 @@ class TestWindow:
 
         self.timer_label = ttk.Label(main, text="", foreground="darkblue")
         self.timer_label.pack(anchor="w", pady=(4, 12))
+
+        self.scenario_label = ttk.Label(main, text="", wraplength=840, justify="left")
+        self.scenario_label.pack(anchor="w", pady=(0, 8))
 
         self.question_label = ttk.Label(main, text="", wraplength=840, justify="left")
         self.question_label.pack(anchor="w", pady=(6, 8))
@@ -241,6 +277,8 @@ class TestWindow:
         self.meta_label.config(
             text=f"Question {self.current_index + 1}/{len(self.questions)} | Pass threshold: {self.passing_percent:.2f}%"
         )
+        scenario = str(question.get("global_question") or "").strip() if question.get("section_type") == "case_scenario" else ""
+        self.scenario_label.config(text=f"{question.get('section_name') or 'Case Scenario'}\n{scenario}" if scenario else "")
         self.question_label.config(text=question["question_text"])
         for idx, option_text in enumerate(question["options"]):
             self.option_buttons[idx].config(text=option_text)
@@ -497,17 +535,31 @@ class DesktopPlatformApp(tk.Tk):
 
         section_frame = ttk.LabelFrame(forms, text="Add Section", padding=10)
         section_frame.pack(fill="x", pady=(0, 10))
+        self.section_id = ttk.Entry(section_frame)
         self.section_config_id = ttk.Entry(section_frame)
         self.section_name = ttk.Entry(section_frame)
         self.section_select_count = ttk.Entry(section_frame)
         self.section_select_count.insert(0, "1")
         self.section_points = ttk.Entry(section_frame)
         self.section_points.insert(0, "1")
+        self.section_type = ttk.Combobox(section_frame, state="readonly", values=["regular", "case_scenario"], width=16)
+        self.section_type.set("regular")
+        self.section_requires_full_score = tk.BooleanVar(value=False)
+        self.section_global_question = tk.Text(section_frame, height=3)
+        self._pack_labeled(section_frame, "Section ID (leave empty to add)", self.section_id)
         self._pack_labeled(section_frame, "Test Config ID", self.section_config_id)
         self._pack_labeled(section_frame, "Section Name", self.section_name)
         self._pack_labeled(section_frame, "Random questions to show", self.section_select_count)
         self._pack_labeled(section_frame, "Worth per question", self.section_points)
-        ttk.Button(section_frame, text="Add Section", command=self._admin_add_section).pack(fill="x", pady=(8, 0))
+        self._pack_labeled(section_frame, "Section type", self.section_type)
+        ttk.Checkbutton(
+            section_frame,
+            text="100% required",
+            variable=self.section_requires_full_score,
+        ).pack(anchor="w", pady=(0, 8))
+        ttk.Label(section_frame, text="Global question (case-scenario only)").pack(anchor="w")
+        self.section_global_question.pack(fill="x", pady=(2, 8))
+        ttk.Button(section_frame, text="Save Section", command=self._admin_save_section).pack(fill="x", pady=(8, 0))
 
         question_frame = ttk.LabelFrame(forms, text="Add Question", padding=10)
         question_frame.pack(fill="both", expand=True)
@@ -577,7 +629,7 @@ class DesktopPlatformApp(tk.Tk):
 
         self.sections_tree = ttk.Treeview(
             tables,
-            columns=("id", "config", "name", "select", "worth", "bank"),
+            columns=("id", "config", "name", "type", "select", "worth", "bank"),
             show="headings",
             height=6,
         )
@@ -585,6 +637,7 @@ class DesktopPlatformApp(tk.Tk):
             ("id", "ID", 55),
             ("config", "Config", 60),
             ("name", "Section", 130),
+            ("type", "Type", 110),
             ("select", "Shown", 60),
             ("worth", "Worth", 60),
             ("bank", "Bank", 55),
@@ -593,6 +646,7 @@ class DesktopPlatformApp(tk.Tk):
             self.sections_tree.column(col, width=width, anchor="center")
         self.sections_tree.column("name", anchor="w")
         self.sections_tree.pack(fill="x", pady=(10, 0))
+        ttk.Button(tables, text="Load Selected Section", command=self._load_selected_section).pack(anchor="e", pady=(8, 0))
 
         ttk.Button(tables, text="Refresh Admin Data", command=self._refresh_admin).pack(anchor="e", pady=(8, 0))
 
@@ -710,6 +764,7 @@ class DesktopPlatformApp(tk.Tk):
 
         for item in self.sections_tree.get_children():
             self.sections_tree.delete(item)
+        self._section_rows = {int(section["id"]): section for section in sections}
         for section in sections:
             self.sections_tree.insert(
                 "",
@@ -718,6 +773,7 @@ class DesktopPlatformApp(tk.Tk):
                     section["id"],
                     section["test_config_id"],
                     section["name"],
+                    section.get("section_type", "regular"),
                     section["select_count"],
                     section["points_per_question"],
                     section["question_count"],
@@ -798,11 +854,40 @@ class DesktopPlatformApp(tk.Tk):
         self._refresh_catalog()
         messagebox.showinfo("Success", "Test config saved.", parent=self)
 
-    def _admin_add_section(self):
+    def _load_selected_section(self):
+        selected = self.sections_tree.focus()
+        if not selected:
+            messagebox.showwarning("Selection required", "Select a section from the sections table.", parent=self)
+            return
+        values = self.sections_tree.item(selected, "values")
+        section_id = int(values[0])
+        section = getattr(self, "_section_rows", {}).get(section_id)
+        if not section:
+            messagebox.showerror("Section error", "Refresh admin data and try again.", parent=self)
+            return
+        self.section_id.delete(0, tk.END)
+        self.section_id.insert(0, str(section["id"]))
+        self.section_config_id.delete(0, tk.END)
+        self.section_config_id.insert(0, str(section["test_config_id"]))
+        self.section_name.delete(0, tk.END)
+        self.section_name.insert(0, str(section["name"]))
+        self.section_select_count.delete(0, tk.END)
+        self.section_select_count.insert(0, str(section["select_count"]))
+        self.section_points.delete(0, tk.END)
+        self.section_points.insert(0, str(section["points_per_question"]))
+        self.section_type.set(str(section.get("section_type") or "regular"))
+        self.section_requires_full_score.set(bool(section.get("requires_full_score")))
+        self.section_global_question.delete("1.0", tk.END)
+        self.section_global_question.insert("1.0", str(section.get("global_question") or ""))
+
+    def _admin_save_section(self):
+        section_id_raw = self.section_id.get().strip()
         config_id_raw = self.section_config_id.get().strip()
         name = self.section_name.get().strip()
         select_raw = self.section_select_count.get().strip()
         points_raw = self.section_points.get().strip()
+        section_type = self.section_type.get().strip() or "regular"
+        global_question = self.section_global_question.get("1.0", tk.END).strip()
         try:
             config_id = int(config_id_raw)
             select_count = int(select_raw)
@@ -815,19 +900,49 @@ class DesktopPlatformApp(tk.Tk):
         if not name:
             messagebox.showerror("Validation", "Section name is required.", parent=self)
             return
+        if section_type == "case_scenario" and not global_question:
+            messagebox.showerror("Validation", "Global question is required for case-scenario sections.", parent=self)
+            return
         try:
-            self.api.admin_add_test_section(config_id, name, select_count, points)
+            if section_id_raw:
+                self.api.admin_update_test_section(
+                    int(section_id_raw),
+                    name,
+                    select_count,
+                    points,
+                    bool(self.section_requires_full_score.get()),
+                    section_type,
+                    global_question if section_type == "case_scenario" else None,
+                )
+                success_message = "Section updated."
+            else:
+                self.api.admin_add_test_section(
+                    config_id,
+                    name,
+                    select_count,
+                    points,
+                    section_type,
+                    global_question if section_type == "case_scenario" else None,
+                )
+                success_message = "Section added."
         except APIError as error:
             messagebox.showerror("Section error", str(error), parent=self)
             return
+        except ValueError:
+            messagebox.showerror("Validation", "Section ID must be a valid integer.", parent=self)
+            return
+        self.section_id.delete(0, tk.END)
         self.section_name.delete(0, tk.END)
         self.section_select_count.delete(0, tk.END)
         self.section_select_count.insert(0, "1")
         self.section_points.delete(0, tk.END)
         self.section_points.insert(0, "1")
+        self.section_type.set("regular")
+        self.section_requires_full_score.set(False)
+        self.section_global_question.delete("1.0", tk.END)
         self._refresh_admin()
         self._refresh_catalog()
-        messagebox.showinfo("Success", "Section added.", parent=self)
+        messagebox.showinfo("Success", success_message, parent=self)
 
     def _admin_add_question(self):
         config_id_raw = self.question_config_id.get().strip()

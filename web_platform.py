@@ -87,6 +87,8 @@ class SectionCreateIn(BaseModel):
     select_count: int = Field(ge=1)
     points_per_question: int = Field(ge=1, le=100)
     requires_full_score: bool = False
+    section_type: str = "regular"
+    global_question: str | None = None
 
 
 class SectionUpdateIn(BaseModel):
@@ -94,6 +96,8 @@ class SectionUpdateIn(BaseModel):
     select_count: int = Field(ge=1)
     points_per_question: int = Field(ge=1, le=100)
     requires_full_score: bool = False
+    section_type: str | None = None
+    global_question: str | None = None
 
 
 class SectionReorderIn(BaseModel):
@@ -462,6 +466,8 @@ def webapi_admin_create_section(request: Request, payload: SectionCreateIn):
             "select_count": payload.select_count,
             "points_per_question": payload.points_per_question,
             "requires_full_score": payload.requires_full_score,
+            "section_type": payload.section_type,
+            "global_question": payload.global_question,
         },
     )
 
@@ -469,16 +475,20 @@ def webapi_admin_create_section(request: Request, payload: SectionCreateIn):
 @app.patch("/webapi/admin/test-sections/{section_id}")
 def webapi_admin_update_section(request: Request, section_id: int, payload: SectionUpdateIn):
     token = require_token(request)
+    body = {
+        "name": payload.name.strip(),
+        "select_count": payload.select_count,
+        "points_per_question": payload.points_per_question,
+        "requires_full_score": payload.requires_full_score,
+    }
+    if payload.section_type is not None:
+        body["section_type"] = payload.section_type
+        body["global_question"] = payload.global_question
     return api_request(
         token,
         "PATCH",
         f"/admin/test-sections/{section_id}",
-        json={
-            "name": payload.name.strip(),
-            "select_count": payload.select_count,
-            "points_per_question": payload.points_per_question,
-            "requires_full_score": payload.requires_full_score,
-        },
+        json=body,
     )
 
 

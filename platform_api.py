@@ -124,6 +124,8 @@ class TestSection(Base):
     points_per_question: Mapped[int] = mapped_column(Integer, default=1)
     order_index: Mapped[int] = mapped_column(Integer, default=0)
     requires_full_score: Mapped[bool] = mapped_column(Boolean, default=False)
+    section_type: Mapped[str] = mapped_column(String(40), default="regular")
+    global_question: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     test_config: Mapped[TestConfig] = relationship(back_populates="sections")
     questions: Mapped[list["Question"]] = relationship(back_populates="section")
@@ -324,6 +326,20 @@ def parse_options(options_json: str, fallback_correct_index: int | None = None) 
     return options
 
 
+def normalize_section_type(value: str | None) -> str:
+    normalized = str(value or "regular").strip().lower().replace("-", "_")
+    if normalized in {"case", "scenario", "case_scenario", "case_scenario_section"}:
+        return "case_scenario"
+    return "regular"
+
+
+def normalize_global_question(section_type: str, value: str | None) -> str | None:
+    cleaned = str(value or "").strip()
+    if section_type != "case_scenario":
+        return None
+    return cleaned or None
+
+
 def send_pass_notification_email(to_email: str, username: str, topic_name: str, level_name: str, score_text: str):
     if not SMTP_HOST or not SMTP_USERNAME or not SMTP_PASSWORD:
         return
@@ -409,6 +425,8 @@ class TestSectionCreateIn(BaseModel):
     select_count: int = Field(ge=1)
     points_per_question: int = Field(ge=1, le=100)
     requires_full_score: bool = False
+    section_type: str = "regular"
+    global_question: str | None = None
 
 
 class TestSectionUpdateIn(BaseModel):
@@ -416,6 +434,8 @@ class TestSectionUpdateIn(BaseModel):
     select_count: int | None = Field(default=None, ge=1)
     points_per_question: int | None = Field(default=None, ge=1, le=100)
     requires_full_score: bool | None = None
+    section_type: str | None = None
+    global_question: str | None = None
 
 
 class TestSectionReorderIn(BaseModel):
@@ -430,6 +450,8 @@ class TestSectionOut(BaseModel):
     points_per_question: int
     order_index: int
     requires_full_score: bool
+    section_type: str
+    global_question: str | None = None
     question_count: int
 
 
@@ -446,6 +468,10 @@ class QuestionPublicOut(BaseModel):
     question_text: str
     options: list[str]
     allow_multiple: bool = False
+    section_id: int | None = None
+    section_name: str | None = None
+    section_type: str = "regular"
+    global_question: str | None = None
 
 
 class QuestionAdminOut(QuestionPublicOut):
@@ -611,6 +637,9 @@ def serialize_question_admin(question: Question) -> QuestionAdminOut:
         id=question.id,
         test_config_id=question.test_config_id,
         section_id=question.section_id,
+        section_name=question.section.name if question.section is not None else None,
+        section_type=(question.section.section_type or "regular") if question.section is not None else "regular",
+        global_question=question.section.global_question if question.section is not None else None,
         question_text=question.question_text,
         options=options,
         correct_index=correct_indices[0],
@@ -647,6 +676,8 @@ def serialize_test_section(section: TestSection) -> TestSectionOut:
         points_per_question=section.points_per_question,
         order_index=section.order_index,
         requires_full_score=section.requires_full_score,
+        section_type=section.section_type or "regular",
+        global_question=section.global_question,
         question_count=len(section.questions),
     )
 
@@ -953,6 +984,10 @@ def on_startup():
             conn.execute(text("ALTER TABLE test_sections ADD COLUMN order_index INTEGER DEFAULT 0"))
         if "test_sections" in columns_by_table and "requires_full_score" not in section_columns:
             conn.execute(text("ALTER TABLE test_sections ADD COLUMN requires_full_score BOOLEAN DEFAULT FALSE"))
+        if "test_sections" in columns_by_table and "section_type" not in section_columns:
+            conn.execute(text("ALTER TABLE test_sections ADD COLUMN section_type VARCHAR(40) DEFAULT 'regular'"))
+        if "test_sections" in columns_by_table and "global_question" not in section_columns:
+            conn.execute(text("ALTER TABLE test_sections ADD COLUMN global_question TEXT"))
 
 
 @app.get("/health")
@@ -1297,6 +1332,10 @@ def admin_create_test_section(
     )
     if duplicate is not None:
         raise HTTPException(status_code=409, detail="A section with this name already exists for this test.")
+    section_type = normalize_section_type(payload.section_type)
+    global_question = normalize_global_question(section_type, payload.global_question)
+    if section_type == "case_scenario" and not global_question:
+        raise HTTPException(status_code=400, detail="Global question is required for case-scenario sections.")
     next_order = (
         db.scalar(
             select(func.max(TestSection.order_index)).where(TestSection.test_config_id == payload.test_config_id)
@@ -1310,6 +1349,8 @@ def admin_create_test_section(
         points_per_question=payload.points_per_question,
         order_index=next_order,
         requires_full_score=payload.requires_full_score,
+        section_type=section_type,
+        global_question=global_question,
     )
     db.add(section)
     db.commit()
@@ -1394,6 +1435,14 @@ def admin_update_test_section(
         section.points_per_question = payload.points_per_question
     if payload.requires_full_score is not None:
         section.requires_full_score = payload.requires_full_score
+    section_type = normalize_section_type(section.section_type)
+    if payload.section_type is not None:
+        section_type = normalize_section_type(payload.section_type)
+        section.section_type = section_type
+    if "global_question" in payload.model_fields_set or payload.section_type is not None:
+        section.global_question = normalize_global_question(section_type, payload.global_question)
+    if section.section_type == "case_scenario" and not section.global_question:
+        raise HTTPException(status_code=400, detail="Global question is required for case-scenario sections.")
     db.commit()
     db.refresh(section)
     return serialize_test_section(section)
@@ -1449,7 +1498,15 @@ def admin_add_question(
     db.add(question)
     db.commit()
     db.refresh(question)
-    return QuestionPublicOut(id=question.id, question_text=question.question_text, options=cleaned_options)
+    return QuestionPublicOut(
+        id=question.id,
+        section_id=question.section_id,
+        section_name=question.section.name if question.section is not None else None,
+        section_type=(question.section.section_type or "regular") if question.section is not None else "regular",
+        global_question=question.section.global_question if question.section is not None else None,
+        question_text=question.question_text,
+        options=cleaned_options,
+    )
 
 
 @app.get("/admin/questions", response_model=list[QuestionAdminOut])
@@ -1585,6 +1642,10 @@ def user_start_test(
         question_payloads.append(
             QuestionPublicOut(
                 id=question.id,
+                section_id=question.section_id,
+                section_name=question.section.name if question.section is not None else None,
+                section_type=(question.section.section_type or "regular") if question.section is not None else "regular",
+                global_question=question.section.global_question if question.section is not None else None,
                 question_text=question.question_text,
                 options=[options[index] for index in order],
                 allow_multiple=len(correct_indices) > 1,
