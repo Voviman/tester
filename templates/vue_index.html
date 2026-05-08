@@ -751,11 +751,59 @@
                                         <div class="small muted">
                                             Duration {{ activeAdminTestConfig.duration_minutes }} min |
                                             Pass {{ Number(activeAdminTestConfig.passing_percent).toFixed(2) }}% |
+                                            Selected {{ activeAdminTestSections.length ? activeAdminSelectedQuestionCount : activeAdminTestConfig.question_count }} |
+                                            Worth {{ activeAdminTestSections.length ? activeAdminMaxScore : activeAdminTestConfig.question_count }} |
                                             Status {{ activeAdminTestConfig.is_active ? 'active' : 'inactive' }}
                                         </div>
                                     </div>
                                     <div class="admin-test-card-actions">
                                         <button class="btn primary small" @click="openAddQuestionModal(activeAdminTestConfig)" :disabled="busy">Add Question</button>
+                                    </div>
+                                </div>
+
+                                <div class="admin-section-manager">
+                                    <div class="admin-section-head">
+                                        <div>
+                                            <h3>Sections</h3>
+                                        </div>
+                                    </div>
+                                    <div class="admin-section-form">
+                                        <label class="admin-section-field section-name-field">
+                                            <span>Section name</span>
+                                            <input v-model.trim="admin.sectionForm.name" placeholder="Examples">
+                                        </label>
+                                        <label class="admin-section-field">
+                                            <span>Questions shown</span>
+                                            <input v-model.number="admin.sectionForm.select_count" type="number" min="1">
+                                        </label>
+                                        <label class="admin-section-field">
+                                            <span>Points each</span>
+                                            <input v-model.number="admin.sectionForm.points_per_question" type="number" min="1">
+                                        </label>
+                                        <button class="btn secondary small" type="button" @click="submitAdminSection()" :disabled="busy">
+                                            Add Section
+                                        </button>
+                                    </div>
+                                    <div v-if="activeAdminTestSections.length" class="admin-section-list">
+                                        <div v-for="section in activeAdminTestSections" :key="section.id" class="admin-section-row">
+                                            <label class="admin-section-field section-name-field">
+                                                <span>Section name</span>
+                                                <input v-model.trim="section.name" aria-label="Section name">
+                                            </label>
+                                            <label class="admin-section-field">
+                                                <span>Questions shown</span>
+                                                <input v-model.number="section.select_count" type="number" min="1" aria-label="Questions shown">
+                                            </label>
+                                            <label class="admin-section-field">
+                                                <span>Points each</span>
+                                                <input v-model.number="section.points_per_question" type="number" min="1" aria-label="Points each">
+                                            </label>
+                                            <span class="admin-section-bank">{{ section.question_count }} in bank</span>
+                                            <button class="admin-catalog-action-btn" type="button" @click="submitAdminSection(section)" :disabled="busy">Save</button>
+                                            <button class="admin-delete-icon-btn" type="button" @click="requestDeleteAdminSection(section)" :disabled="busy" aria-label="Delete section" title="Delete section">
+                                                <i class="bi bi-trash3" aria-hidden="true"></i>
+                                            </button>
+                                        </div>
                                     </div>
                                 </div>
 
@@ -766,6 +814,7 @@
                                     <table class="admin-question-table">
                                         <thead>
                                             <tr>
+                                                <th>Section</th>
                                                 <th>Question</th>
                                                 <th v-for="optionIndex in adminQuestionOptionIndexes" :key="`head-${optionIndex}`">
                                                     Option {{ optionLetter(optionIndex) }}
@@ -783,6 +832,7 @@
                                                 @click="openEditQuestionModal(question)"
                                                 @keyup.enter="openEditQuestionModal(question)"
                                             >
+                                                <td>{{ sectionName(question.section_id) }}</td>
                                                 <td>{{ question.question_text }}</td>
                                                 <td v-for="optionIndex in adminQuestionOptionIndexes" :key="`opt-${question.id}-${optionIndex}`">
                                                     {{ questionOptionAt(question, optionIndex) }}
@@ -832,6 +882,12 @@
                                     <option :value="0">Select test</option>
                                     <option v-for="cfg in admin.test_configs" :key="cfg.id" :value="cfg.id">
                                         {{ cfg.topic_name }} - {{ cfg.level_name }}
+                                    </option>
+                                </select>
+                                <select v-model="admin.questionForm.section_id">
+                                    <option :value="null">No section</option>
+                                    <option v-for="section in activeAdminTestSections" :key="section.id" :value="section.id">
+                                        {{ section.name }}
                                     </option>
                                 </select>
                                 <textarea v-model.trim="admin.questionForm.question_text" rows="3" placeholder="Question text"></textarea>

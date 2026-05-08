@@ -70,6 +70,7 @@ createApp({
             admin: {
                 users: [],
                 test_configs: [],
+                sections: [],
                 questions: [],
                 activeTab: "tests",
                 testSearchQuery: "",
@@ -111,9 +112,17 @@ createApp({
                 questionForm: {
                     id: 0,
                     test_config_id: 0,
+                    section_id: null,
                     question_text: "",
                     options: ["", "", "", ""],
                     correct_indices: [],
+                },
+                sectionForm: {
+                    id: 0,
+                    test_config_id: 0,
+                    name: "",
+                    select_count: 1,
+                    points_per_question: 1,
                 },
                 confirmModalOpen: false,
                 confirmModal: {
@@ -273,6 +282,23 @@ createApp({
             if (!target) return [];
             const targetId = Number(target.id);
             return (this.admin.questions || []).filter((item) => Number(item.test_config_id) === targetId);
+        },
+        activeAdminTestSections() {
+            const target = this.activeAdminTestConfig;
+            if (!target) return [];
+            const targetId = Number(target.id);
+            return (this.admin.sections || []).filter((item) => Number(item.test_config_id) === targetId);
+        },
+        activeAdminSelectedQuestionCount() {
+            return this.activeAdminTestSections.reduce((total, section) => {
+                return total + Math.min(Number(section.select_count || 0), Number(section.question_count || 0));
+            }, 0);
+        },
+        activeAdminMaxScore() {
+            return this.activeAdminTestSections.reduce((total, section) => {
+                const selected = Math.min(Number(section.select_count || 0), Number(section.question_count || 0));
+                return total + selected * Number(section.points_per_question || 1);
+            }, 0);
         },
         adminQuestionOptionIndexes() {
             const questions = this.activeAdminTestQuestions;
@@ -933,6 +959,7 @@ createApp({
         },
         selectAdminTest(testConfigId) {
             this.admin.selectedTestConfigId = Number(testConfigId) || 0;
+            this.admin.sectionForm.test_config_id = Number(testConfigId) || 0;
         },
         async selectAdminUser(userId) {
             this.admin.selectedUserId = Number(userId) || 0;
@@ -968,6 +995,20 @@ createApp({
             if (!indices.length) return "-";
             const labels = indices.map((index) => options[index] || `Option ${this.optionLetter(index)}`);
             return labels.join(", ");
+        },
+        sectionName(sectionId) {
+            const id = Number(sectionId || 0);
+            const section = (this.admin.sections || []).find((item) => Number(item.id) === id);
+            return section ? section.name : "Unsectioned";
+        },
+        resetSectionForm() {
+            this.admin.sectionForm = {
+                id: 0,
+                test_config_id: Number(this.activeAdminTestConfig?.id || 0),
+                name: "",
+                select_count: 1,
+                points_per_question: 1,
+            };
         },
         resetAdminTestForm() {
             this.admin.testForm = {
@@ -1055,6 +1096,10 @@ createApp({
             }
             if (action === "delete-question") {
                 await this.deleteAdminQuestion();
+                return;
+            }
+            if (action === "delete-section") {
+                await this.deleteAdminSection();
             }
         },
         requestDeleteAdminTest() {
@@ -1083,6 +1128,21 @@ createApp({
                 "delete-question",
             );
         },
+        requestDeleteAdminSection(section) {
+            if (!section?.id) return;
+            this.admin.sectionForm = {
+                id: Number(section.id),
+                test_config_id: Number(section.test_config_id),
+                name: String(section.name || ""),
+                select_count: Number(section.select_count || 1),
+                points_per_question: Number(section.points_per_question || 1),
+            };
+            this.openConfirmModal(
+                "Delete Section",
+                `Delete section "${section.name}"? Questions in it will become unsectioned.`,
+                "delete-section",
+            );
+        },
         setQuestionTarget(testConfigId) {
             this.admin.questionForm.test_config_id = Number(testConfigId) || 0;
         },
@@ -1091,6 +1151,7 @@ createApp({
             this.admin.questionForm = {
                 id: 0,
                 test_config_id: keepTestId,
+                section_id: null,
                 question_text: "",
                 options: ["", "", "", ""],
                 correct_indices: [],
@@ -1108,6 +1169,7 @@ createApp({
             this.admin.questionForm = {
                 id: Number(question?.id) || 0,
                 test_config_id: Number(question?.test_config_id) || Number(this.activeAdminTestConfig?.id) || 0,
+                section_id: question?.section_id ? Number(question.section_id) : null,
                 question_text: String(question?.question_text || ""),
                 options: options.length >= 2 ? options : ["", ""],
                 correct_indices: this.getQuestionCorrectIndices(question),
@@ -1170,6 +1232,7 @@ createApp({
             }
             return {
                 test_config_id: Number(form.test_config_id),
+                section_id: form.section_id ? Number(form.section_id) : null,
                 question_text: form.question_text,
                 options: cleanedOptions,
                 correct_indices: selectedCorrect,
@@ -1183,6 +1246,7 @@ createApp({
             try {
                 if (this.admin.questionModalMode === "edit" && this.admin.questionForm.id) {
                     await this.request("PATCH", `/webapi/admin/questions/${this.admin.questionForm.id}`, {
+                        section_id: payload.section_id,
                         question_text: payload.question_text,
                         options: payload.options,
                         correct_indices: payload.correct_indices,
@@ -1209,6 +1273,72 @@ createApp({
                 this.success = "Question deleted.";
                 await this.loadAdmin();
                 this.closeQuestionModal();
+            } catch (error) {
+                this.error = error.message;
+            } finally {
+                this.busy = false;
+            }
+        },
+        async submitAdminSection(section = null) {
+            this.clearNotices();
+            const form = section
+                ? {
+                      id: Number(section.id || 0),
+                      test_config_id: Number(section.test_config_id || this.activeAdminTestConfig?.id || 0),
+                      name: String(section.name || ""),
+                      select_count: Number(section.select_count || 1),
+                      points_per_question: Number(section.points_per_question || 1),
+                  }
+                : this.admin.sectionForm;
+            if (!form.test_config_id) {
+                this.error = "Select a test before saving a section.";
+                return;
+            }
+            if (!String(form.name || "").trim()) {
+                this.error = "Section name is required.";
+                return;
+            }
+            if (Number(form.select_count) < 1 || Number(form.points_per_question) < 1) {
+                this.error = "Select count and worth must be at least 1.";
+                return;
+            }
+            const payload = {
+                test_config_id: Number(form.test_config_id),
+                name: String(form.name).trim(),
+                select_count: Number(form.select_count),
+                points_per_question: Number(form.points_per_question),
+            };
+            this.busy = true;
+            try {
+                if (form.id) {
+                    await this.request("PATCH", `/webapi/admin/test-sections/${form.id}`, {
+                        name: payload.name,
+                        select_count: payload.select_count,
+                        points_per_question: payload.points_per_question,
+                    });
+                    this.success = "Section updated.";
+                } else {
+                    await this.request("POST", "/webapi/admin/test-sections", payload);
+                    this.success = "Section added.";
+                    this.resetSectionForm();
+                }
+                await this.loadAdmin();
+            } catch (error) {
+                this.error = error.message;
+            } finally {
+                this.busy = false;
+            }
+        },
+        async deleteAdminSection() {
+            const sectionId = Number(this.admin.sectionForm.id || 0);
+            if (!sectionId) return;
+            this.clearNotices();
+            this.busy = true;
+            try {
+                await this.request("DELETE", `/webapi/admin/test-sections/${sectionId}`);
+                this.success = "Section deleted.";
+                this.resetSectionForm();
+                await this.loadAdmin();
             } catch (error) {
                 this.error = error.message;
             } finally {
@@ -1655,6 +1785,7 @@ createApp({
             try {
                 const data = await this.request("GET", "/webapi/admin/overview");
                 this.admin.users = data.users || [];
+                this.admin.sections = data.sections || [];
                 this.admin.questions = data.questions || [];
                 this.admin.test_configs = (data.test_configs || []).map((item) => ({
                     ...item,
@@ -1670,6 +1801,9 @@ createApp({
                 const availableQuestionConfigIds = new Set(this.admin.test_configs.map((item) => item.id));
                 if (!availableQuestionConfigIds.has(Number(this.admin.questionForm.test_config_id))) {
                     this.admin.questionForm.test_config_id = this.admin.test_configs.length ? this.admin.test_configs[0].id : 0;
+                }
+                if (!this.admin.sectionForm.test_config_id || !availableQuestionConfigIds.has(Number(this.admin.sectionForm.test_config_id))) {
+                    this.admin.sectionForm.test_config_id = this.admin.selectedTestConfigId || (this.admin.test_configs.length ? this.admin.test_configs[0].id : 0);
                 }
                 if (this.admin.testFormMode === "update") {
                     const fresh = this.admin.test_configs.find((item) => item.id === this.admin.testForm.id);

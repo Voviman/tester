@@ -1523,6 +1523,70 @@ body {
     overflow: auto;
 }
 
+.admin-section-manager {
+    display: grid;
+    gap: 10px;
+    margin: 12px 0;
+    padding: 12px;
+    background: #f8fbff;
+    border: 1px solid #dbe5f3;
+    border-radius: 8px;
+    border-top: 1px solid #e2e8f0;
+    border-bottom: 1px solid #e2e8f0;
+}
+
+.admin-section-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.admin-section-head h3 {
+    margin: 0 0 2px;
+    font-size: 15px;
+}
+
+.admin-section-form,
+.admin-section-row {
+    display: grid;
+    grid-template-columns: minmax(220px, 1fr) 142px 118px auto;
+    gap: 10px;
+    align-items: end;
+}
+
+.admin-section-list {
+    display: grid;
+    gap: 8px;
+}
+
+.admin-section-row {
+    grid-template-columns: minmax(220px, 1fr) 142px 118px 92px auto auto;
+    padding-top: 8px;
+    border-top: 1px solid #e2e8f0;
+}
+
+.admin-section-field {
+    display: grid;
+    gap: 4px;
+    margin: 0;
+    color: #475569;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.admin-section-field input {
+    min-width: 0;
+}
+
+.admin-section-bank {
+    align-self: center;
+    justify-self: start;
+    color: #64748b;
+    font-size: 12px;
+    white-space: nowrap;
+}
+
 .admin-question-table {
     width: 100%;
     border-collapse: collapse;
@@ -1977,6 +2041,11 @@ textarea {
     }
 
     .admin-test-card-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .admin-section-form,
+    .admin-section-row {
         grid-template-columns: 1fr;
     }
 

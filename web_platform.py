@@ -62,15 +62,30 @@ class ConfigCreateIn(BaseModel):
 
 class QuestionCreateIn(BaseModel):
     test_config_id: int
+    section_id: int | None = None
     question_text: str = Field(min_length=5)
     options: list[str] = Field(min_length=2, max_length=10)
     correct_indices: list[int] = Field(min_length=1)
 
 
 class QuestionUpdateIn(BaseModel):
+    section_id: int | None = None
     question_text: str = Field(min_length=5)
     options: list[str] = Field(min_length=2, max_length=10)
     correct_indices: list[int] = Field(min_length=1)
+
+
+class SectionCreateIn(BaseModel):
+    test_config_id: int
+    name: str = Field(min_length=1, max_length=120)
+    select_count: int = Field(ge=1)
+    points_per_question: int = Field(ge=1, le=100)
+
+
+class SectionUpdateIn(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    select_count: int = Field(ge=1)
+    points_per_question: int = Field(ge=1, le=100)
 
 
 class TestBuilderIn(BaseModel):
@@ -356,14 +371,16 @@ def webapi_admin_overview(request: Request):
         {
             "users": "/admin/users",
             "test_configs": "/admin/test-configs",
+            "sections": "/admin/test-sections",
             "questions": "/admin/questions",
         },
-        optional_keys={"questions"},
+        optional_keys={"questions", "sections"},
     )
     users = data["users"]
     test_configs = data["test_configs"]
+    sections = data["sections"]
     questions = data["questions"]
-    return {"users": users, "test_configs": test_configs, "questions": questions}
+    return {"users": users, "test_configs": test_configs, "sections": sections, "questions": questions}
 
 
 @app.get("/webapi/admin/users/{user_id}/stats")
@@ -441,6 +458,43 @@ def webapi_admin_delete_config(request: Request, test_config_id: int):
     return api_request(token, "DELETE", f"/admin/test-configs/{test_config_id}")
 
 
+@app.post("/webapi/admin/test-sections")
+def webapi_admin_create_section(request: Request, payload: SectionCreateIn):
+    token, _ = require_admin(request)
+    return api_request(
+        token,
+        "POST",
+        "/admin/test-sections",
+        json={
+            "test_config_id": payload.test_config_id,
+            "name": payload.name.strip(),
+            "select_count": payload.select_count,
+            "points_per_question": payload.points_per_question,
+        },
+    )
+
+
+@app.patch("/webapi/admin/test-sections/{section_id}")
+def webapi_admin_update_section(request: Request, section_id: int, payload: SectionUpdateIn):
+    token, _ = require_admin(request)
+    return api_request(
+        token,
+        "PATCH",
+        f"/admin/test-sections/{section_id}",
+        json={
+            "name": payload.name.strip(),
+            "select_count": payload.select_count,
+            "points_per_question": payload.points_per_question,
+        },
+    )
+
+
+@app.delete("/webapi/admin/test-sections/{section_id}")
+def webapi_admin_delete_section(request: Request, section_id: int):
+    token, _ = require_admin(request)
+    return api_request(token, "DELETE", f"/admin/test-sections/{section_id}")
+
+
 @app.post("/webapi/admin/questions")
 def webapi_admin_create_question(request: Request, payload: QuestionCreateIn):
     token, _ = require_admin(request)
@@ -452,6 +506,7 @@ def webapi_admin_create_question(request: Request, payload: QuestionCreateIn):
         "/admin/questions",
         json={
             "test_config_id": payload.test_config_id,
+            "section_id": payload.section_id,
             "question_text": payload.question_text.strip(),
             "options": clean_options,
             "correct_indices": clean_correct_indices,
@@ -469,6 +524,7 @@ def webapi_admin_update_question(request: Request, question_id: int, payload: Qu
         "PATCH",
         f"/admin/questions/{question_id}",
         json={
+            "section_id": payload.section_id,
             "question_text": payload.question_text.strip(),
             "options": clean_options,
             "correct_indices": clean_correct_indices,

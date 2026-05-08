@@ -135,6 +135,7 @@ class PlatformAPIClient:
     def admin_add_question(
         self,
         test_config_id: int,
+        section_id: int | None,
         question_text: str,
         options: list[str],
         correct_index: int,
@@ -144,9 +145,25 @@ class PlatformAPIClient:
             "/admin/questions",
             json={
                 "test_config_id": test_config_id,
+                "section_id": section_id,
                 "question_text": question_text,
                 "options": options,
-                "correct_index": correct_index,
+                "correct_indices": [correct_index],
+            },
+        )
+
+    def admin_test_sections(self):
+        return self._request("GET", "/admin/test-sections")
+
+    def admin_add_test_section(self, test_config_id: int, name: str, select_count: int, points_per_question: int):
+        return self._request(
+            "POST",
+            "/admin/test-sections",
+            json={
+                "test_config_id": test_config_id,
+                "name": name,
+                "select_count": select_count,
+                "points_per_question": points_per_question,
             },
         )
 
@@ -477,9 +494,24 @@ class DesktopPlatformApp(tk.Tk):
         self._pack_labeled(config_frame, "Passing %", self.config_pass)
         ttk.Button(config_frame, text="Save Config", command=self._admin_save_config).pack(fill="x", pady=(8, 0))
 
+        section_frame = ttk.LabelFrame(forms, text="Add Section", padding=10)
+        section_frame.pack(fill="x", pady=(0, 10))
+        self.section_config_id = ttk.Entry(section_frame)
+        self.section_name = ttk.Entry(section_frame)
+        self.section_select_count = ttk.Entry(section_frame)
+        self.section_select_count.insert(0, "1")
+        self.section_points = ttk.Entry(section_frame)
+        self.section_points.insert(0, "1")
+        self._pack_labeled(section_frame, "Test Config ID", self.section_config_id)
+        self._pack_labeled(section_frame, "Section Name", self.section_name)
+        self._pack_labeled(section_frame, "Random questions to show", self.section_select_count)
+        self._pack_labeled(section_frame, "Worth per question", self.section_points)
+        ttk.Button(section_frame, text="Add Section", command=self._admin_add_section).pack(fill="x", pady=(8, 0))
+
         question_frame = ttk.LabelFrame(forms, text="Add Question", padding=10)
         question_frame.pack(fill="both", expand=True)
         self.question_config_id = ttk.Entry(question_frame)
+        self.question_section_id = ttk.Entry(question_frame)
         self.question_text = tk.Text(question_frame, height=4)
         self.question_opts = [ttk.Entry(question_frame) for _ in range(4)]
         self.question_correct = ttk.Combobox(
@@ -490,6 +522,7 @@ class DesktopPlatformApp(tk.Tk):
         )
         self.question_correct.set("0")
         self._pack_labeled(question_frame, "Test Config ID", self.question_config_id)
+        self._pack_labeled(question_frame, "Section ID (optional)", self.question_section_id)
         ttk.Label(question_frame, text="Question Text").pack(anchor="w")
         self.question_text.pack(fill="x", pady=(2, 8))
         for idx, entry in enumerate(self.question_opts, start=1):
@@ -521,7 +554,7 @@ class DesktopPlatformApp(tk.Tk):
 
         self.config_tree = ttk.Treeview(
             tables,
-            columns=("id", "topic", "level", "duration", "pass", "q"),
+            columns=("id", "topic", "level", "duration", "pass", "q", "bank", "sections"),
             show="headings",
             height=12,
         )
@@ -531,13 +564,34 @@ class DesktopPlatformApp(tk.Tk):
             ("level", "Level", 120),
             ("duration", "Min", 70),
             ("pass", "Pass %", 70),
-            ("q", "Q", 50),
+            ("q", "Shown", 60),
+            ("bank", "Bank", 55),
+            ("sections", "Sec", 50),
         ]:
             self.config_tree.heading(col, text=title)
             self.config_tree.column(col, width=width, anchor="center")
         self.config_tree.column("topic", anchor="w")
         self.config_tree.column("level", anchor="w")
         self.config_tree.pack(fill="both", expand=True, pady=(10, 0))
+
+        self.sections_tree = ttk.Treeview(
+            tables,
+            columns=("id", "config", "name", "select", "worth", "bank"),
+            show="headings",
+            height=6,
+        )
+        for col, title, width in [
+            ("id", "ID", 55),
+            ("config", "Config", 60),
+            ("name", "Section", 130),
+            ("select", "Shown", 60),
+            ("worth", "Worth", 60),
+            ("bank", "Bank", 55),
+        ]:
+            self.sections_tree.heading(col, text=title)
+            self.sections_tree.column(col, width=width, anchor="center")
+        self.sections_tree.column("name", anchor="w")
+        self.sections_tree.pack(fill="x", pady=(10, 0))
 
         ttk.Button(tables, text="Refresh Admin Data", command=self._refresh_admin).pack(anchor="e", pady=(8, 0))
 
@@ -621,6 +675,7 @@ class DesktopPlatformApp(tk.Tk):
         try:
             users = self.api.admin_users()
             configs = self.api.admin_test_configs()
+            sections = self.api.admin_test_sections()
         except APIError as error:
             messagebox.showerror("Admin error", str(error), parent=self)
             return
@@ -647,6 +702,24 @@ class DesktopPlatformApp(tk.Tk):
                     int(config["duration_seconds"]) // 60,
                     f"{float(config['passing_percent']):.2f}",
                     config["question_count"],
+                    config.get("bank_question_count", config["question_count"]),
+                    config.get("section_count", 0),
+                ),
+            )
+
+        for item in self.sections_tree.get_children():
+            self.sections_tree.delete(item)
+        for section in sections:
+            self.sections_tree.insert(
+                "",
+                "end",
+                values=(
+                    section["id"],
+                    section["test_config_id"],
+                    section["name"],
+                    section["select_count"],
+                    section["points_per_question"],
+                    section["question_count"],
                 ),
             )
 
@@ -724,13 +797,46 @@ class DesktopPlatformApp(tk.Tk):
         self._refresh_catalog()
         messagebox.showinfo("Success", "Test config saved.", parent=self)
 
+    def _admin_add_section(self):
+        config_id_raw = self.section_config_id.get().strip()
+        name = self.section_name.get().strip()
+        select_raw = self.section_select_count.get().strip()
+        points_raw = self.section_points.get().strip()
+        try:
+            config_id = int(config_id_raw)
+            select_count = int(select_raw)
+            points = int(points_raw)
+            if select_count < 1 or points < 1:
+                raise ValueError
+        except ValueError:
+            messagebox.showerror("Validation", "Config ID, random questions, and worth must be valid positive integers.", parent=self)
+            return
+        if not name:
+            messagebox.showerror("Validation", "Section name is required.", parent=self)
+            return
+        try:
+            self.api.admin_add_test_section(config_id, name, select_count, points)
+        except APIError as error:
+            messagebox.showerror("Section error", str(error), parent=self)
+            return
+        self.section_name.delete(0, tk.END)
+        self.section_select_count.delete(0, tk.END)
+        self.section_select_count.insert(0, "1")
+        self.section_points.delete(0, tk.END)
+        self.section_points.insert(0, "1")
+        self._refresh_admin()
+        self._refresh_catalog()
+        messagebox.showinfo("Success", "Section added.", parent=self)
+
     def _admin_add_question(self):
         config_id_raw = self.question_config_id.get().strip()
+        section_id_raw = self.question_section_id.get().strip()
         question_text = self.question_text.get("1.0", tk.END).strip()
         options = [entry.get().strip() for entry in self.question_opts]
         correct_raw = self.question_correct.get().strip()
         try:
             config_id = int(config_id_raw)
+            section_id = int(section_id_raw) if section_id_raw else None
             correct_index = int(correct_raw)
             if correct_index < 0 or correct_index > 3:
                 raise ValueError
@@ -741,11 +847,12 @@ class DesktopPlatformApp(tk.Tk):
             messagebox.showerror("Validation", "Question text and all options are required.", parent=self)
             return
         try:
-            self.api.admin_add_question(config_id, question_text, options, correct_index)
+            self.api.admin_add_question(config_id, section_id, question_text, options, correct_index)
         except APIError as error:
             messagebox.showerror("Question error", str(error), parent=self)
             return
         self.question_text.delete("1.0", tk.END)
+        self.question_section_id.delete(0, tk.END)
         for entry in self.question_opts:
             entry.delete(0, tk.END)
         self.question_correct.set("0")

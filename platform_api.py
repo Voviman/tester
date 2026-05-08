@@ -13,7 +13,7 @@ import jwt
 from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel, EmailStr, Field
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, create_engine, delete, func, select
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, create_engine, delete, func, inspect, select, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 
 
@@ -109,7 +109,21 @@ class TestConfig(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
     questions: Mapped[list["Question"]] = relationship(back_populates="test_config", cascade="all,delete")
+    sections: Mapped[list["TestSection"]] = relationship(back_populates="test_config", cascade="all,delete")
     attempts: Mapped[list["Attempt"]] = relationship(back_populates="test_config")
+
+
+class TestSection(Base):
+    __tablename__ = "test_sections"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    test_config_id: Mapped[int] = mapped_column(ForeignKey("test_configs.id"), index=True)
+    name: Mapped[str] = mapped_column(String(120), index=True)
+    select_count: Mapped[int] = mapped_column(Integer, default=1)
+    points_per_question: Mapped[int] = mapped_column(Integer, default=1)
+
+    test_config: Mapped[TestConfig] = relationship(back_populates="sections")
+    questions: Mapped[list["Question"]] = relationship(back_populates="section")
 
 
 class Question(Base):
@@ -117,11 +131,13 @@ class Question(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     test_config_id: Mapped[int] = mapped_column(ForeignKey("test_configs.id"))
+    section_id: Mapped[int | None] = mapped_column(ForeignKey("test_sections.id"), nullable=True)
     question_text: Mapped[str] = mapped_column(Text)
     options_json: Mapped[str] = mapped_column(Text)
     correct_index: Mapped[int] = mapped_column(Integer)
 
     test_config: Mapped[TestConfig] = relationship(back_populates="questions")
+    section: Mapped[TestSection | None] = relationship(back_populates="questions")
 
 
 class Attempt(Base):
@@ -135,6 +151,8 @@ class Attempt(Base):
     ended_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
     score: Mapped[int] = mapped_column(Integer, default=0)
     total_questions: Mapped[int] = mapped_column(Integer, default=0)
+    max_score: Mapped[int] = mapped_column(Integer, default=0)
+    selected_question_ids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     passed: Mapped[bool] = mapped_column(Boolean, default=False)
 
     user: Mapped[User] = relationship(back_populates="attempts")
@@ -235,6 +253,24 @@ def build_question_payload(options: list[str], correct_indices: list[int]) -> st
     return json.dumps({"options": options, "correct_indices": unique_indices})
 
 
+def parse_selected_question_ids(raw_value: str | None) -> list[int]:
+    if not raw_value:
+        return []
+    try:
+        value = json.loads(raw_value)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(value, list):
+        return []
+    ids = []
+    for item in value:
+        try:
+            ids.append(int(item))
+        except (TypeError, ValueError):
+            continue
+    return ids
+
+
 def parse_options(options_json: str, fallback_correct_index: int | None = None) -> list[str]:
     options, _ = parse_question_payload(options_json, fallback_correct_index)
     return options
@@ -315,10 +351,35 @@ class TestConfigOut(BaseModel):
     passing_percent: float
     is_active: bool
     question_count: int
+    bank_question_count: int
+    section_count: int
+
+
+class TestSectionCreateIn(BaseModel):
+    test_config_id: int
+    name: str = Field(min_length=1, max_length=120)
+    select_count: int = Field(ge=1)
+    points_per_question: int = Field(ge=1, le=100)
+
+
+class TestSectionUpdateIn(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    select_count: int | None = Field(default=None, ge=1)
+    points_per_question: int | None = Field(default=None, ge=1, le=100)
+
+
+class TestSectionOut(BaseModel):
+    id: int
+    test_config_id: int
+    name: str
+    select_count: int
+    points_per_question: int
+    question_count: int
 
 
 class QuestionCreateIn(BaseModel):
     test_config_id: int
+    section_id: int | None = None
     question_text: str = Field(min_length=5)
     options: list[str] = Field(min_length=2, max_length=10)
     correct_indices: list[int] = Field(min_length=1)
@@ -332,6 +393,7 @@ class QuestionPublicOut(BaseModel):
 
 class QuestionAdminOut(QuestionPublicOut):
     test_config_id: int
+    section_id: int | None = None
     correct_index: int
     correct_indices: list[int]
 
@@ -404,6 +466,7 @@ class TestConfigUpdateIn(BaseModel):
 
 
 class QuestionUpdateIn(BaseModel):
+    section_id: int | None = None
     question_text: str | None = Field(default=None, min_length=5)
     options: list[str] | None = Field(default=None, min_length=2, max_length=10)
     correct_indices: list[int] | None = None
@@ -483,10 +546,42 @@ def serialize_question_admin(question: Question) -> QuestionAdminOut:
     return QuestionAdminOut(
         id=question.id,
         test_config_id=question.test_config_id,
+        section_id=question.section_id,
         question_text=question.question_text,
         options=options,
-        correct_index=question.correct_index,
+        correct_index=correct_indices[0],
         correct_indices=correct_indices,
+    )
+
+
+def configured_question_count(config: TestConfig) -> int:
+    if not config.sections:
+        return len(config.questions)
+    return sum(min(max(section.select_count, 0), len(section.questions)) for section in config.sections)
+
+
+def serialize_test_config(config: TestConfig) -> TestConfigOut:
+    return TestConfigOut(
+        id=config.id,
+        topic_name=config.topic_name,
+        level_name=config.level_name,
+        duration_seconds=config.duration_seconds,
+        passing_percent=config.passing_percent,
+        is_active=config.is_active,
+        question_count=configured_question_count(config),
+        bank_question_count=len(config.questions),
+        section_count=len(config.sections),
+    )
+
+
+def serialize_test_section(section: TestSection) -> TestSectionOut:
+    return TestSectionOut(
+        id=section.id,
+        test_config_id=section.test_config_id,
+        name=section.name,
+        select_count=section.select_count,
+        points_per_question=section.points_per_question,
+        question_count=len(section.questions),
     )
 
 
@@ -520,7 +615,7 @@ def build_user_admin_stats(db: Session, user: User) -> UserAdminStatsOut:
                 id=item.id,
                 status=item.status,
                 score=item.score,
-                total_questions=item.total_questions,
+                total_questions=item.max_score or item.total_questions,
                 passed=item.passed,
                 started_at=item.started_at,
                 ended_at=item.ended_at,
@@ -556,18 +651,7 @@ def build_social_dashboard(db: Session, current_user: User) -> SocialDashboardOu
         .where(TestConfig.is_active.is_(True))
         .order_by(TestConfig.topic_name.asc(), TestConfig.level_name.asc())
     ).all()
-    tests_out = [
-        TestConfigOut(
-            id=item.id,
-            topic_name=item.topic_name,
-            level_name=item.level_name,
-            duration_seconds=item.duration_seconds,
-            passing_percent=item.passing_percent,
-            is_active=item.is_active,
-            question_count=len(item.questions),
-        )
-        for item in tests
-    ]
+    tests_out = [serialize_test_config(item) for item in tests]
 
     following_ids = db.scalars(
         select(UserFollow.following_id).where(UserFollow.follower_id == current_user.id)
@@ -599,7 +683,7 @@ def build_social_dashboard(db: Session, current_user: User) -> SocialDashboardOu
         config = config_map.get(attempt.test_config_id)
         if user is None or config is None:
             continue
-        total = max(attempt.total_questions, 1)
+        total = max(attempt.max_score or attempt.total_questions, 1)
         success_percent = (attempt.score / total) * 100
         recent_results.append(
             SocialResultOut(
@@ -610,7 +694,7 @@ def build_social_dashboard(db: Session, current_user: User) -> SocialDashboardOu
                 topic_name=config.topic_name,
                 level_name=config.level_name,
                 score=attempt.score,
-                total_questions=attempt.total_questions,
+                total_questions=attempt.max_score or attempt.total_questions,
                 passed=attempt.passed,
                 success_percent=round(success_percent, 2),
                 ended_at=attempt.ended_at,
@@ -709,7 +793,8 @@ def build_social_user_profile(db: Session, target_user: User) -> SocialUserProfi
         config = config_map.get(item.test_config_id)
         topic_name = config.topic_name if config is not None else "Unknown Topic"
         level_name = config.level_name if config is not None else "Unknown Level"
-        success_percent = (item.score / item.total_questions * 100) if item.total_questions else 0.0
+        total = item.max_score or item.total_questions
+        success_percent = (item.score / total * 100) if total else 0.0
         recent_results.append(
             SocialResultOut(
                 attempt_id=item.id,
@@ -719,7 +804,7 @@ def build_social_user_profile(db: Session, target_user: User) -> SocialUserProfi
                 topic_name=topic_name,
                 level_name=level_name,
                 score=item.score,
-                total_questions=item.total_questions,
+                total_questions=total,
                 passed=item.passed,
                 success_percent=round(success_percent, 2),
                 ended_at=item.ended_at,
@@ -780,6 +865,17 @@ app = FastAPI(
 @app.on_event("startup")
 def on_startup():
     Base.metadata.create_all(bind=engine)
+    inspector = inspect(engine)
+    columns_by_table = {table: {column["name"] for column in inspector.get_columns(table)} for table in inspector.get_table_names()}
+    with engine.begin() as conn:
+        question_columns = columns_by_table.get("questions", set())
+        if "questions" in columns_by_table and "section_id" not in question_columns:
+            conn.execute(text("ALTER TABLE questions ADD COLUMN section_id INTEGER"))
+        attempt_columns = columns_by_table.get("attempts", set())
+        if "attempts" in columns_by_table and "max_score" not in attempt_columns:
+            conn.execute(text("ALTER TABLE attempts ADD COLUMN max_score INTEGER DEFAULT 0"))
+        if "attempts" in columns_by_table and "selected_question_ids_json" not in attempt_columns:
+            conn.execute(text("ALTER TABLE attempts ADD COLUMN selected_question_ids_json TEXT"))
 
 
 @app.get("/health")
@@ -997,16 +1093,7 @@ def admin_upsert_test_config(
         existing.is_active = payload.is_active
         db.commit()
         db.refresh(existing)
-        question_count = len(existing.questions)
-        return TestConfigOut(
-            id=existing.id,
-            topic_name=existing.topic_name,
-            level_name=existing.level_name,
-            duration_seconds=existing.duration_seconds,
-            passing_percent=existing.passing_percent,
-            is_active=existing.is_active,
-            question_count=question_count,
-        )
+        return serialize_test_config(existing)
 
     config = TestConfig(
         topic_name=payload.topic_name.strip(),
@@ -1018,15 +1105,7 @@ def admin_upsert_test_config(
     db.add(config)
     db.commit()
     db.refresh(config)
-    return TestConfigOut(
-        id=config.id,
-        topic_name=config.topic_name,
-        level_name=config.level_name,
-        duration_seconds=config.duration_seconds,
-        passing_percent=config.passing_percent,
-        is_active=config.is_active,
-        question_count=0,
-    )
+    return serialize_test_config(config)
 
 
 @app.get("/admin/test-configs", response_model=list[TestConfigOut])
@@ -1035,20 +1114,7 @@ def admin_list_test_configs(
     db: Annotated[Session, Depends(get_db)],
 ):
     configs = db.scalars(select(TestConfig).order_by(TestConfig.topic_name, TestConfig.level_name)).all()
-    result = []
-    for config in configs:
-        result.append(
-            TestConfigOut(
-                id=config.id,
-                topic_name=config.topic_name,
-                level_name=config.level_name,
-                duration_seconds=config.duration_seconds,
-                passing_percent=config.passing_percent,
-                is_active=config.is_active,
-                question_count=len(config.questions),
-            )
-        )
-    return result
+    return [serialize_test_config(config) for config in configs]
 
 
 @app.patch("/admin/test-configs/{test_config_id}", response_model=TestConfigOut)
@@ -1075,15 +1141,7 @@ def admin_update_test_config(
 
     db.commit()
     db.refresh(config)
-    return TestConfigOut(
-        id=config.id,
-        topic_name=config.topic_name,
-        level_name=config.level_name,
-        duration_seconds=config.duration_seconds,
-        passing_percent=config.passing_percent,
-        is_active=config.is_active,
-        question_count=len(config.questions),
-    )
+    return serialize_test_config(config)
 
 
 @app.delete("/admin/test-configs/{test_config_id}")
@@ -1109,6 +1167,96 @@ def admin_delete_test_config(
     return {"deleted": True}
 
 
+@app.post("/admin/test-sections", response_model=TestSectionOut)
+def admin_create_test_section(
+    payload: TestSectionCreateIn,
+    _: Annotated[User, Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))],
+    db: Annotated[Session, Depends(get_db)],
+):
+    config = db.get(TestConfig, payload.test_config_id)
+    if config is None:
+        raise HTTPException(status_code=404, detail="Test config not found.")
+    name = payload.name.strip()
+    duplicate = db.scalar(
+        select(TestSection).where(
+            TestSection.test_config_id == payload.test_config_id,
+            func.lower(TestSection.name) == name.lower(),
+        )
+    )
+    if duplicate is not None:
+        raise HTTPException(status_code=409, detail="A section with this name already exists for this test.")
+    section = TestSection(
+        test_config_id=payload.test_config_id,
+        name=name,
+        select_count=payload.select_count,
+        points_per_question=payload.points_per_question,
+    )
+    db.add(section)
+    db.commit()
+    db.refresh(section)
+    return serialize_test_section(section)
+
+
+@app.get("/admin/test-sections", response_model=list[TestSectionOut])
+def admin_list_test_sections(
+    _: Annotated[User, Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))],
+    db: Annotated[Session, Depends(get_db)],
+    test_config_id: int | None = Query(default=None),
+):
+    query = select(TestSection).order_by(TestSection.test_config_id, TestSection.id)
+    if test_config_id is not None:
+        query = query.where(TestSection.test_config_id == test_config_id)
+    sections = db.scalars(query).all()
+    return [serialize_test_section(section) for section in sections]
+
+
+@app.patch("/admin/test-sections/{section_id}", response_model=TestSectionOut)
+def admin_update_test_section(
+    section_id: int,
+    payload: TestSectionUpdateIn,
+    _: Annotated[User, Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))],
+    db: Annotated[Session, Depends(get_db)],
+):
+    section = db.get(TestSection, section_id)
+    if section is None:
+        raise HTTPException(status_code=404, detail="Section not found.")
+    if payload.name is not None:
+        name = payload.name.strip()
+        duplicate = db.scalar(
+            select(TestSection).where(
+                TestSection.test_config_id == section.test_config_id,
+                func.lower(TestSection.name) == name.lower(),
+                TestSection.id != section.id,
+            )
+        )
+        if duplicate is not None:
+            raise HTTPException(status_code=409, detail="A section with this name already exists for this test.")
+        section.name = name
+    if payload.select_count is not None:
+        section.select_count = payload.select_count
+    if payload.points_per_question is not None:
+        section.points_per_question = payload.points_per_question
+    db.commit()
+    db.refresh(section)
+    return serialize_test_section(section)
+
+
+@app.delete("/admin/test-sections/{section_id}")
+def admin_delete_test_section(
+    section_id: int,
+    _: Annotated[User, Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))],
+    db: Annotated[Session, Depends(get_db)],
+):
+    section = db.get(TestSection, section_id)
+    if section is None:
+        raise HTTPException(status_code=404, detail="Section not found.")
+    for question in section.questions:
+        question.section_id = None
+    db.delete(section)
+    db.commit()
+    return {"deleted": True}
+
+
 @app.post("/admin/questions", response_model=QuestionPublicOut)
 def admin_add_question(
     payload: QuestionCreateIn,
@@ -1118,6 +1266,10 @@ def admin_add_question(
     config = db.get(TestConfig, payload.test_config_id)
     if config is None:
         raise HTTPException(status_code=404, detail="Test config not found.")
+    if payload.section_id is not None:
+        section = db.get(TestSection, payload.section_id)
+        if section is None or section.test_config_id != payload.test_config_id:
+            raise HTTPException(status_code=400, detail="Selected section does not belong to this test.")
     cleaned_options = [item.strip() for item in payload.options]
     if any(not item for item in cleaned_options):
         raise HTTPException(status_code=400, detail="All options are required.")
@@ -1131,6 +1283,7 @@ def admin_add_question(
 
     question = Question(
         test_config_id=payload.test_config_id,
+        section_id=payload.section_id,
         question_text=payload.question_text.strip(),
         options_json=build_question_payload(cleaned_options, clean_correct_indices),
         correct_index=clean_correct_indices[0],
@@ -1164,6 +1317,15 @@ def admin_update_question(
     question = db.get(Question, question_id)
     if question is None:
         raise HTTPException(status_code=404, detail="Question not found.")
+
+    if "section_id" in payload.model_fields_set:
+        if payload.section_id is None:
+            question.section_id = None
+        else:
+            section = db.get(TestSection, payload.section_id)
+            if section is None or section.test_config_id != question.test_config_id:
+                raise HTTPException(status_code=400, detail="Selected section does not belong to this test.")
+            question.section_id = payload.section_id
 
     if payload.question_text is not None:
         question.question_text = payload.question_text.strip()
@@ -1218,20 +1380,7 @@ def user_list_test_catalog(
     configs = db.scalars(
         select(TestConfig).where(TestConfig.is_active.is_(True)).order_by(TestConfig.topic_name, TestConfig.level_name)
     ).all()
-    items = []
-    for config in configs:
-        items.append(
-            TestConfigOut(
-                id=config.id,
-                topic_name=config.topic_name,
-                level_name=config.level_name,
-                duration_seconds=config.duration_seconds,
-                passing_percent=config.passing_percent,
-                is_active=config.is_active,
-                question_count=len(config.questions),
-            )
-        )
-    return items
+    return [serialize_test_config(config) for config in configs]
 
 
 @app.post("/tests/start/{test_config_id}", response_model=TestStartOut)
@@ -1248,22 +1397,44 @@ def user_start_test(
     if len(config.questions) == 0:
         raise HTTPException(status_code=400, detail="This test has no questions yet.")
 
+    randomizer = secrets.SystemRandom()
+    if config.sections:
+        selected_questions: list[Question] = []
+        for section in config.sections:
+            section_questions = list(section.questions)
+            randomizer.shuffle(section_questions)
+            selected_questions.extend(section_questions[: section.select_count])
+        if not selected_questions:
+            raise HTTPException(status_code=400, detail="This test has no selectable section questions yet.")
+    else:
+        selected_questions = list(config.questions)
+        randomizer.shuffle(selected_questions)
+    randomizer.shuffle(selected_questions)
+    selected_question_ids = [question.id for question in selected_questions]
+    max_score = sum(
+        (question.section.points_per_question if question.section is not None else 1) for question in selected_questions
+    )
+
     current_user.credits -= 1
-    attempt = Attempt(user_id=current_user.id, test_config_id=config.id, status=AttemptStatus.IN_PROGRESS.value)
+    attempt = Attempt(
+        user_id=current_user.id,
+        test_config_id=config.id,
+        status=AttemptStatus.IN_PROGRESS.value,
+        total_questions=len(selected_questions),
+        max_score=max_score,
+        selected_question_ids_json=json.dumps(selected_question_ids),
+    )
     db.add(attempt)
     db.commit()
     db.refresh(attempt)
 
-    # We return a randomized question order for each attempt session.
-    shuffled_questions = list(config.questions)
-    secrets.SystemRandom().shuffle(shuffled_questions)
     questions_out = [
         QuestionPublicOut(
             id=question.id,
             question_text=question.question_text,
             options=parse_options(question.options_json),
         )
-        for question in shuffled_questions
+        for question in selected_questions
     ]
     return TestStartOut(
         attempt_id=attempt.id,
@@ -1291,12 +1462,18 @@ def user_submit_test(
     if config is None:
         raise HTTPException(status_code=404, detail="Test config not found.")
 
-    questions = list(config.questions)
+    selected_ids = parse_selected_question_ids(attempt.selected_question_ids_json)
+    if selected_ids:
+        question_by_id = {question.id: question for question in config.questions}
+        questions = [question_by_id[question_id] for question_id in selected_ids if question_id in question_by_id]
+    else:
+        questions = list(config.questions)
     if not questions:
         raise HTTPException(status_code=400, detail="No questions configured for this test.")
 
     score = 0
     total_questions = len(questions)
+    max_score = sum((question.section.points_per_question if question.section is not None else 1) for question in questions)
     answer_map = payload.answers
 
     for question in questions:
@@ -1309,12 +1486,13 @@ def user_submit_test(
         else:
             selected_indices = []
         if selected_indices == correct_indices:
-            score += 1
+            score += question.section.points_per_question if question.section is not None else 1
 
-    success_percent = (score / total_questions) * 100
+    success_percent = (score / max_score) * 100 if max_score else 0
     passed = success_percent >= config.passing_percent
     attempt.score = score
     attempt.total_questions = total_questions
+    attempt.max_score = max_score
     attempt.passed = passed
     attempt.status = AttemptStatus.COMPLETED.value if passed else AttemptStatus.FAILED.value
     attempt.ended_at = dt.datetime.utcnow()
@@ -1326,7 +1504,7 @@ def user_submit_test(
             username=current_user.username,
             topic_name=config.topic_name,
             level_name=config.level_name,
-            score_text=f"{score}/{total_questions}",
+            score_text=f"{score}/{max_score}",
         )
 
     db.refresh(current_user)
@@ -1334,7 +1512,7 @@ def user_submit_test(
         attempt_id=attempt.id,
         passed=passed,
         score=score,
-        total_questions=total_questions,
+        total_questions=max_score,
         success_percent=round(success_percent, 2),
         remaining_credits=current_user.credits,
     )
