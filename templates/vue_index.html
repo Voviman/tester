@@ -459,8 +459,8 @@
                     </aside>
                 </section>
 
-                <div v-if="activeCourseSession" class="admin-modal-backdrop" @click.self="closeCourseSession">
-                    <article class="admin-modal course-module-modal">
+                <section v-if="view==='course' && activeCourseSession" class="course-page">
+                    <article class="panel course-module-modal">
                         <div class="section-head admin-modal-head">
                             <div>
                                 <h3>{{ activeCourseSession.course.title }}</h3>
@@ -468,9 +468,7 @@
                                     Module {{ Number(activeCourseSession.currentIndex || 0) + 1 }} of {{ currentCourseModules().length }}
                                 </div>
                             </div>
-                            <button class="admin-close-btn" type="button" @click="closeCourseSession" aria-label="Close">
-                                <i class="bi bi-x-lg" aria-hidden="true"></i>
-                            </button>
+                            <button class="btn secondary small" type="button" @click="closeCourseSession">Back to Courses</button>
                         </div>
                         <template v-if="currentCourseModule()">
                             <h2 class="course-module-title">{{ currentCourseModule().title }}</h2>
@@ -480,8 +478,13 @@
                                 v-html="renderMarkdown(currentCourseModule().content)"
                             ></div>
                             <div v-else-if="currentCourseModule().module_type === 'video'" class="course-module-media">
+                                <video
+                                    v-if="isDirectVideoUrl(currentCourseModule().resource_url)"
+                                    controls
+                                    :src="absoluteResourceUrl(currentCourseModule().resource_url)"
+                                ></video>
                                 <iframe
-                                    v-if="currentCourseModule().resource_url"
+                                    v-else-if="currentCourseModule().resource_url"
                                     :src="videoEmbedUrl(currentCourseModule().resource_url)"
                                     title="Course video"
                                     allowfullscreen
@@ -498,7 +501,7 @@
                                 <a
                                     v-if="currentCourseModule().resource_url"
                                     class="btn secondary small"
-                                    :href="currentCourseModule().resource_url"
+                                    :href="absoluteResourceUrl(currentCourseModule().resource_url)"
                                     target="_blank"
                                     rel="noopener"
                                 >
@@ -520,7 +523,7 @@
                             </div>
                         </template>
                     </article>
-                </div>
+                </section>
 
                 <section v-if="view==='profile'" class="profile-page">
                     <article v-if="profileLoading" class="panel">
@@ -1143,6 +1146,15 @@
                                     <label class="admin-section-field admin-section-global-field">
                                         <span>File or video URL</span>
                                         <input v-model.trim="admin.moduleForm.resource_url" placeholder="https://...">
+                                    </label>
+                                    <label class="admin-section-field admin-section-global-field">
+                                        <span>Upload document, PPTX, or video</span>
+                                        <input
+                                            :key="courseFileInputKey"
+                                            type="file"
+                                            accept=".pdf,.doc,.docx,.ppt,.pptx,.mp4,.webm,.mov,.m4v"
+                                            @change="uploadCourseModuleFile"
+                                        >
                                     </label>
                                     <label class="admin-section-field admin-section-global-field">
                                         <span>Markdown content</span>

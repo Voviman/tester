@@ -4,14 +4,17 @@ import json
 import os
 import secrets
 import smtplib
+import shutil
 from email.message import EmailMessage
 from enum import Enum
+from pathlib import Path
 from typing import Annotated
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import jwt
-from fastapi import Depends, FastAPI, HTTPException, Query, status
+from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, create_engine, delete, func, inspect, select, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, selectinload, sessionmaker
@@ -60,6 +63,8 @@ SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USERNAME = os.getenv("SMTP_USERNAME", "")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 SMTP_SENDER = os.getenv("SMTP_SENDER", SMTP_USERNAME or "noreply@example.com")
+UPLOAD_ROOT = Path(os.getenv("UPLOAD_ROOT", "uploads")).resolve()
+COURSE_UPLOAD_DIR = UPLOAD_ROOT / "course_modules"
 
 engine = create_engine(DATABASE_URL, future=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
@@ -573,6 +578,11 @@ class TestAccessOverrideIn(BaseModel):
     user_id: int
     test_config_id: int
     grant: bool = True
+
+
+class CourseModuleFileOut(BaseModel):
+    url: str
+    filename: str
 
 
 class TestSectionCreateIn(BaseModel):
@@ -1305,6 +1315,9 @@ app = FastAPI(
     ),
     version="1.0.0",
 )
+UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
+COURSE_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=str(UPLOAD_ROOT)), name="uploads")
 
 
 @app.on_event("startup")
@@ -1567,6 +1580,23 @@ def admin_delete_course_module(
     db.delete(module)
     db.commit()
     return {"deleted": True}
+
+
+@app.post("/admin/course-module-files", response_model=CourseModuleFileOut)
+def admin_upload_course_module_file(
+    _: Annotated[User, Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))],
+    file: UploadFile = File(...),
+):
+    original = Path(file.filename or "course-file").name
+    suffix = Path(original).suffix.lower()
+    allowed = {".pdf", ".doc", ".docx", ".ppt", ".pptx", ".mp4", ".webm", ".mov", ".m4v"}
+    if suffix not in allowed:
+        raise HTTPException(status_code=400, detail="Unsupported file type.")
+    stored_name = f"{secrets.token_urlsafe(16)}{suffix}"
+    target = COURSE_UPLOAD_DIR / stored_name
+    with target.open("wb") as handle:
+        shutil.copyfileobj(file.file, handle)
+    return CourseModuleFileOut(url=f"/uploads/course_modules/{stored_name}", filename=original)
 
 
 @app.delete("/admin/courses/{course_id}")

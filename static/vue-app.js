@@ -70,6 +70,7 @@ createApp({
             desktopParticipationToken: "",
             testSession: null,
             activeCourseSession: null,
+            courseFileInputKey: 0,
             admin: {
                 users: [],
                 test_configs: [],
@@ -511,6 +512,35 @@ createApp({
             this.testFilterLevel = "";
             this.testFilterDuration = "";
         },
+        findDashboardCourse(courseId) {
+            const id = Number(courseId || 0);
+            return this.dashboardCourses.find((course) => Number(course.id) === id) || null;
+        },
+        findCourseModule(course, moduleId) {
+            const modules = Array.isArray(course?.modules) ? course.modules.filter((item) => item.is_active !== false) : [];
+            if (!modules.length) return { module: null, index: 0 };
+            const id = Number(moduleId || 0);
+            const foundIndex = id ? modules.findIndex((item) => Number(item.id) === id) : -1;
+            const index = foundIndex >= 0 ? foundIndex : 0;
+            return { module: modules[index], index };
+        },
+        async openCourseFromRoute() {
+            const { courseId, moduleId } = this.getCourseRouteInfo();
+            if (!courseId) return;
+            const course = this.findDashboardCourse(courseId);
+            if (!course) {
+                this.error = "Course not found.";
+                this.view = "dashboard";
+                return;
+            }
+            const { module, index } = this.findCourseModule(course, moduleId);
+            if (!module) {
+                this.error = "This course has no active modules yet.";
+                this.view = "dashboard";
+                return;
+            }
+            await this.openCourseModule(course, module, index, { push: false });
+        },
         emptyProfilePayload(userId = 0) {
             return {
                 profile: {
@@ -555,7 +585,15 @@ createApp({
         pathToView(pathname) {
             if (pathname === "/profile") return "profile";
             if (pathname === "/admin") return "admin";
+            if (pathname.startsWith("/courses/")) return "course";
             return "dashboard";
+        },
+        getCourseRouteInfo() {
+            const match = window.location.pathname.match(/^\/courses\/(\d+)(?:\/modules\/(\d+))?/);
+            return {
+                courseId: match ? Number(match[1]) : 0,
+                moduleId: match && match[2] ? Number(match[2]) : 0,
+            };
         },
         getProfileTargetUserIdFromLocation() {
             if (window.location.pathname !== "/profile") return 0;
@@ -569,6 +607,13 @@ createApp({
                     return `/profile?user_id=${this.profileTargetUserId}`;
                 }
                 return "/profile";
+            }
+            if (view === "course") {
+                const courseId = Number(this.activeCourseSession?.courseId || this.getCourseRouteInfo().courseId || 0);
+                const moduleId = Number(this.currentCourseModule()?.id || this.getCourseRouteInfo().moduleId || 0);
+                if (courseId && moduleId) return `/courses/${courseId}/modules/${moduleId}`;
+                if (courseId) return `/courses/${courseId}`;
+                return "/dashboard";
             }
             if (view === "admin") return "/admin";
             return "/dashboard";
@@ -1125,14 +1170,10 @@ createApp({
                 this.error = "This course has no active modules yet.";
                 return;
             }
-            this.activeCourseSession = {
-                courseId: Number(course.id),
-                currentIndex: 0,
-                course,
-            };
             await this.openCourseModule(course, modules[0], 0);
         },
-        async openCourseModule(course, module, index = 0) {
+        async openCourseModule(course, module, index = 0, options = {}) {
+            const { push = true } = options;
             const courseId = Number(course?.id || 0);
             const moduleId = Number(module?.id || 0);
             if (!courseId || !moduleId || this.busy) return;
@@ -1149,6 +1190,10 @@ createApp({
                     currentIndex: Number(index || 0),
                     course: updatedCourse || course,
                 };
+                this.view = "course";
+                if (push) {
+                    window.history.pushState({}, "", `/courses/${courseId}/modules/${moduleId}`);
+                }
                 if (updatedCourse?.completed) {
                     this.success = "Course completed. Linked tests are now unlocked.";
                 }
@@ -1161,6 +1206,8 @@ createApp({
         },
         closeCourseSession() {
             this.activeCourseSession = null;
+            this.view = "dashboard";
+            window.history.pushState({}, "", "/dashboard");
         },
         currentCourseModules() {
             return (this.activeCourseSession?.course?.modules || []).filter((item) => item.is_active !== false);
@@ -1173,7 +1220,14 @@ createApp({
             const modules = this.currentCourseModules();
             const nextIndex = Number(this.activeCourseSession?.currentIndex || 0) + 1;
             if (nextIndex >= modules.length) return;
-            await this.openCourseModule(this.activeCourseSession.course, modules[nextIndex], nextIndex);
+                await this.openCourseModule(this.activeCourseSession.course, modules[nextIndex], nextIndex);
+        },
+        absoluteResourceUrl(url) {
+            const value = String(url || "").trim();
+            if (!value) return "";
+            if (/^https?:\/\//i.test(value)) return value;
+            const base = String(window.PLATFORM_API_URL || "").replace(/\/$/, "");
+            return `${base}${value.startsWith("/") ? "" : "/"}${value}`;
         },
         renderMarkdown(value) {
             const escaped = String(value || "")
@@ -1191,15 +1245,18 @@ createApp({
                 .replace(/\n/g, "<br>");
         },
         officeViewerUrl(url) {
-            const value = String(url || "").trim();
+            const value = this.absoluteResourceUrl(url);
             if (!value) return "";
             return `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(value)}`;
         },
         videoEmbedUrl(url) {
-            const value = String(url || "").trim();
+            const value = this.absoluteResourceUrl(url);
             const yt = value.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([A-Za-z0-9_-]+)/);
             if (yt) return `https://www.youtube.com/embed/${yt[1]}`;
             return value;
+        },
+        isDirectVideoUrl(url) {
+            return /\.(mp4|webm|mov|m4v)(?:\?|#|$)/i.test(String(url || ""));
         },
         async disqualifyParticipationTest(reason = "Anti-cheat warning limit reached.") {
             const session = this.testSession;
@@ -1952,6 +2009,41 @@ createApp({
                 this.busy = false;
             }
         },
+        async uploadCourseModuleFile(event) {
+            const file = event?.target?.files?.[0];
+            if (!file) return;
+            this.busy = true;
+            this.clearNotices();
+            try {
+                const form = new FormData();
+                form.append("file", file);
+                const response = await fetch("/webapi/admin/course-module-files", {
+                    method: "POST",
+                    credentials: "same-origin",
+                    body: form,
+                });
+                let data = {};
+                try {
+                    data = await response.json();
+                } catch (_err) {
+                    data = {};
+                }
+                if (!response.ok) {
+                    throw new Error(this.extractErrorDetail(data) || `Upload failed (${response.status})`);
+                }
+                this.admin.moduleForm.resource_url = data.url || "";
+                const name = String(file.name || "").toLowerCase();
+                if (/\.(ppt|pptx)$/.test(name)) this.admin.moduleForm.module_type = "presentation";
+                else if (/\.(mp4|webm|mov|m4v)$/.test(name)) this.admin.moduleForm.module_type = "video";
+                else this.admin.moduleForm.module_type = "document";
+                this.success = "File uploaded. Save the module to keep it.";
+            } catch (error) {
+                this.error = error.message;
+            } finally {
+                this.busy = false;
+                this.courseFileInputKey += 1;
+            }
+        },
         async deleteCourseModule(module) {
             if (!module?.id) return;
             this.busy = true;
@@ -2199,7 +2291,7 @@ createApp({
                 if (Number(this.me?.id || 0) === this.profileTargetUserId) {
                     this.profileTargetUserId = 0;
                 }
-            } else {
+            } else if (view !== "course") {
                 this.profileTargetUserId = 0;
             }
             this.view = view;
@@ -2223,6 +2315,9 @@ createApp({
                 await this.loadViewData(activeView);
             } else if (this.isViewDataStale(activeView)) {
                 this.preloadViewData(activeView, { force: true }).catch(() => {});
+            }
+            if (this.view === "course") {
+                await this.openCourseFromRoute();
             }
 
             this.preloadInactiveViews();

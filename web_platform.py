@@ -4,7 +4,7 @@ from typing import Any
 
 import requests
 from requests.adapters import HTTPAdapter
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -207,7 +207,7 @@ def api_request(
         if response.text:
             detail = response.text
     if response.status_code == 404 and path.startswith(
-        ("/admin/courses", "/admin/course-modules", "/courses/", "/admin/test-access-overrides")
+        ("/admin/courses", "/admin/course-modules", "/admin/course-module-files", "/courses/", "/admin/test-access-overrides")
     ):
         detail = (
             "Course API is not available on the configured backend. "
@@ -276,6 +276,16 @@ def profile_page(request: Request):
 
 @app.get("/admin", response_class=HTMLResponse)
 def admin_page(request: Request):
+    return render_vue_app(request)
+
+
+@app.get("/courses/{course_id}", response_class=HTMLResponse)
+def course_page(request: Request, course_id: int):
+    return render_vue_app(request)
+
+
+@app.get("/courses/{course_id}/modules/{module_id}", response_class=HTMLResponse)
+def course_module_page(request: Request, course_id: int, module_id: int):
     return render_vue_app(request)
 
 
@@ -472,6 +482,30 @@ def webapi_admin_update_course_module(request: Request, module_id: int, payload:
 def webapi_admin_delete_course_module(request: Request, module_id: int):
     token = require_token(request)
     return api_request(token, "DELETE", f"/admin/course-modules/{module_id}")
+
+
+@app.post("/webapi/admin/course-module-files")
+def webapi_admin_upload_course_module_file(request: Request, file: UploadFile = File(...)):
+    token = require_token(request)
+    try:
+        response = API_SESSION.request(
+            method="POST",
+            url=f"{API_BASE_URL}/admin/course-module-files",
+            headers={"Authorization": f"Bearer {token}"},
+            files={"file": (file.filename, file.file, file.content_type or "application/octet-stream")},
+            timeout=60,
+        )
+    except requests.RequestException as error:
+        raise HTTPException(status_code=503, detail=f"Network error: {error}") from error
+    if response.ok:
+        return response.json()
+    detail = f"{response.status_code} error"
+    try:
+        detail = response.json().get("detail", detail)
+    except Exception:
+        if response.text:
+            detail = response.text
+    raise HTTPException(status_code=response.status_code, detail=detail)
 
 
 @app.post("/webapi/admin/test-access-overrides")
