@@ -196,6 +196,14 @@ def api_request(
     except Exception:
         if response.text:
             detail = response.text
+    if response.status_code == 404 and path.startswith(
+        ("/admin/courses", "/courses/", "/admin/test-access-overrides")
+    ):
+        detail = (
+            "Course API is not available on the configured backend. "
+            f"Restart or redeploy platform_api.py, and make sure PLATFORM_API_URL points to that updated API. "
+            f"Current API: {API_BASE_URL}"
+        )
     raise HTTPException(status_code=response.status_code, detail=detail)
 
 
