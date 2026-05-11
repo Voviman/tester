@@ -45,6 +45,7 @@ createApp({
                     success_rate_percent: 0,
                 },
                 social_dashboard: {
+                    courses: [],
                     tests: [],
                     active_users: [],
                     recent_results: [],
@@ -71,12 +72,14 @@ createApp({
             admin: {
                 users: [],
                 test_configs: [],
+                courses: [],
                 sections: [],
                 questions: [],
                 activeTab: "tests",
                 testSearchQuery: "",
                 userSearchQuery: "",
                 selectedTestConfigId: 0,
+                selectedCourseId: 0,
                 selectedUserId: 0,
                 selectedUserStats: null,
                 selectedUserStatsFetchedAt: 0,
@@ -107,6 +110,21 @@ createApp({
                     duration_minutes: 15,
                     passing_percent: 60,
                     is_active: true,
+                    course_id: null,
+                },
+                courseFormMode: "create",
+                courseForm: {
+                    id: 0,
+                    title: "",
+                    summary: "",
+                    content: "",
+                    is_active: true,
+                    linked_test_id: 0,
+                },
+                accessGrant: {
+                    user_id: 0,
+                    test_config_id: 0,
+                    grant: true,
                 },
                 questionModalOpen: false,
                 questionModalMode: "create",
@@ -276,6 +294,17 @@ createApp({
             if (!this.admin.test_configs.length) return null;
             const selectedId = Number(this.admin.selectedTestConfigId);
             return this.admin.test_configs.find((item) => item.id === selectedId) || this.admin.test_configs[0];
+        },
+        activeAdminCourse() {
+            if (!this.admin.courses.length) return null;
+            const selectedId = Number(this.admin.selectedCourseId);
+            return this.admin.courses.find((item) => item.id === selectedId) || this.admin.courses[0];
+        },
+        dashboardCourses() {
+            return this.dashboard?.social_dashboard?.courses || [];
+        },
+        unlinkedDashboardTests() {
+            return this.filteredDashboardTests.filter((test) => !Number(test.course_id || 0));
         },
         activeAdminUser() {
             if (!this.admin.users.length) return null;
@@ -577,6 +606,27 @@ createApp({
             const userSrc = profileSrc.user || {};
             const socialRaw = payload.social_dashboard || {};
             const social_dashboard = {
+                courses: Array.isArray(socialRaw.courses)
+                    ? socialRaw.courses.map((c) => ({
+                          ...c,
+                          id: Number(c.id),
+                          completed: Boolean(c.completed),
+                          is_active: c.is_active !== false,
+                          linked_tests: Array.isArray(c.linked_tests)
+                              ? c.linked_tests.map((t) => ({
+                                    ...t,
+                                    id: Number(t.id),
+                                    duration_seconds: Number(t.duration_seconds ?? 0),
+                                    passing_percent: Number(t.passing_percent ?? 0),
+                                    question_count: Number(t.question_count ?? 0),
+                                    course_id: t.course_id == null ? null : Number(t.course_id),
+                                    can_start: t.can_start !== false,
+                                    course_completed: Boolean(t.course_completed),
+                                    access_override: Boolean(t.access_override),
+                                }))
+                              : [],
+                      }))
+                    : [],
                 tests: Array.isArray(socialRaw.tests)
                     ? socialRaw.tests.map((t) => ({
                           ...t,
@@ -584,6 +634,10 @@ createApp({
                           duration_seconds: Number(t.duration_seconds ?? 0),
                           passing_percent: Number(t.passing_percent ?? 0),
                           question_count: Number(t.question_count ?? 0),
+                          course_id: t.course_id == null ? null : Number(t.course_id),
+                          can_start: t.can_start !== false,
+                          course_completed: Boolean(t.course_completed),
+                          access_override: Boolean(t.access_override),
                       }))
                     : [],
                 active_users: Array.isArray(socialRaw.active_users)
@@ -932,6 +986,10 @@ createApp({
         async startParticipateInTest(testRow) {
             if (!testRow || this.busy || this.testSession) return;
             if (!this.authenticated) return;
+            if (testRow.can_start === false) {
+                this.error = testRow.locked_reason || "Finish the linked course before starting this test.";
+                return;
+            }
             const questionsCount = Number(testRow.question_count ?? 0);
             if (questionsCount < 1) {
                 this.error = "This test has no questions yet.";
@@ -1035,6 +1093,21 @@ createApp({
                 ) {
                     this.startParticipationTimer();
                 }
+            } finally {
+                this.busy = false;
+            }
+        },
+        async completeCourse(course) {
+            const courseId = Number(course?.id || 0);
+            if (!courseId || this.busy) return;
+            this.clearNotices();
+            this.busy = true;
+            try {
+                await this.request("POST", `/webapi/courses/${courseId}/complete`, null);
+                this.success = "Course completed. Linked tests are now unlocked.";
+                await this.loadDashboard({ silent: true });
+            } catch (error) {
+                this.error = error.message;
             } finally {
                 this.busy = false;
             }
@@ -1211,6 +1284,34 @@ createApp({
                 duration_minutes: 15,
                 passing_percent: 60,
                 is_active: true,
+                course_id: null,
+            };
+        },
+        resetCourseForm() {
+            this.admin.courseFormMode = "create";
+            this.admin.courseForm = {
+                id: 0,
+                title: "",
+                summary: "",
+                content: "",
+                is_active: true,
+                linked_test_id: 0,
+            };
+        },
+        selectAdminCourse(courseId) {
+            this.admin.selectedCourseId = Number(courseId) || 0;
+            const course = this.activeAdminCourse;
+            if (course) this.prepareEditCourse(course);
+        },
+        prepareEditCourse(course) {
+            this.admin.courseFormMode = "update";
+            this.admin.courseForm = {
+                id: Number(course?.id || 0),
+                title: String(course?.title || ""),
+                summary: String(course?.summary || ""),
+                content: String(course?.content || ""),
+                is_active: course?.is_active !== false,
+                linked_test_id: 0,
             };
         },
         openCreateTestMode() {
@@ -1266,6 +1367,7 @@ createApp({
                 duration_minutes: Number(config.duration_minutes),
                 passing_percent: Number(config.passing_percent),
                 is_active: Boolean(config.is_active),
+                course_id: config.course_id || null,
             };
         },
         openConfirmModal(title, message, action) {
@@ -1285,6 +1387,10 @@ createApp({
             }
             if (action === "delete-user") {
                 await this.deleteAdminUser();
+                return;
+            }
+            if (action === "delete-course") {
+                await this.deleteAdminCourse();
                 return;
             }
             if (action === "delete-question") {
@@ -1646,6 +1752,118 @@ createApp({
                 this.busy = false;
             }
         },
+        async saveAdminCourse() {
+            this.clearNotices();
+            const form = this.admin.courseForm;
+            const title = String(form.title || "").trim();
+            if (!title) {
+                this.error = "Course title is required.";
+                return;
+            }
+            this.busy = true;
+            try {
+                const payload = {
+                    title,
+                    summary: String(form.summary || "").trim(),
+                    content: String(form.content || "").trim(),
+                    is_active: Boolean(form.is_active),
+                };
+                if (this.admin.courseFormMode === "update" && form.id) {
+                    await this.request("PATCH", `/webapi/admin/courses/${form.id}`, payload);
+                    this.success = "Course updated.";
+                } else {
+                    const created = await this.request("POST", "/webapi/admin/courses", payload);
+                    this.admin.selectedCourseId = Number(created?.id || 0);
+                    this.success = "Course created.";
+                }
+                await this.loadAdmin();
+            } catch (error) {
+                this.error = error.message;
+            } finally {
+                this.busy = false;
+            }
+        },
+        async deleteAdminCourse() {
+            const target = this.activeAdminCourse;
+            if (!target) return;
+            this.clearNotices();
+            this.busy = true;
+            try {
+                await this.request("DELETE", `/webapi/admin/courses/${target.id}`);
+                this.success = "Course deleted.";
+                this.resetCourseForm();
+                await this.loadAdmin();
+            } catch (error) {
+                this.error = error.message;
+            } finally {
+                this.busy = false;
+            }
+        },
+        async linkSelectedTestToCourse() {
+            const courseId = Number(this.admin.courseForm.id || this.admin.selectedCourseId || 0);
+            const testId = Number(this.admin.courseForm.linked_test_id || 0);
+            if (!courseId || !testId) return;
+            const test = this.admin.test_configs.find((item) => Number(item.id) === testId);
+            if (!test) return;
+            this.busy = true;
+            try {
+                await this.request("PATCH", `/webapi/admin/test-configs/${testId}`, {
+                    topic_name: test.topic_name,
+                    level_name: test.level_name,
+                    duration_minutes: Number(test.duration_minutes),
+                    passing_percent: Number(test.passing_percent),
+                    is_active: Boolean(test.is_active),
+                    course_id: courseId,
+                });
+                this.success = "Test linked to course.";
+                await this.loadAdmin();
+            } catch (error) {
+                this.error = error.message;
+            } finally {
+                this.busy = false;
+            }
+        },
+        async unlinkTestFromCourse(test) {
+            if (!test) return;
+            this.busy = true;
+            try {
+                await this.request("PATCH", `/webapi/admin/test-configs/${test.id}`, {
+                    topic_name: test.topic_name,
+                    level_name: test.level_name,
+                    duration_minutes: Number(test.duration_minutes),
+                    passing_percent: Number(test.passing_percent),
+                    is_active: Boolean(test.is_active),
+                    course_id: null,
+                });
+                this.success = "Test unlinked from course.";
+                await this.loadAdmin();
+            } catch (error) {
+                this.error = error.message;
+            } finally {
+                this.busy = false;
+            }
+        },
+        async saveTestAccessOverride() {
+            const userId = Number(this.admin.accessGrant.user_id || this.admin.selectedUserId || 0);
+            const testId = Number(this.admin.accessGrant.test_config_id || 0);
+            if (!userId || !testId) {
+                this.error = "Select a user and a test.";
+                return;
+            }
+            this.busy = true;
+            try {
+                await this.request("POST", "/webapi/admin/test-access-overrides", {
+                    user_id: userId,
+                    test_config_id: testId,
+                    grant: Boolean(this.admin.accessGrant.grant),
+                });
+                this.success = this.admin.accessGrant.grant ? "Access granted." : "Access removed.";
+            } catch (error) {
+                this.error = error.message;
+            } finally {
+                this.busy = false;
+            }
+        },
         async saveAdminTest() {
             this.clearNotices();
             const form = this.admin.testForm;
@@ -1662,6 +1880,7 @@ createApp({
                         duration_minutes: Number(form.duration_minutes),
                         passing_percent: Number(form.passing_percent),
                         is_active: Boolean(form.is_active),
+                        course_id: form.course_id ? Number(form.course_id) : null,
                     });
                     this.success = "Test updated.";
                     await this.loadAdmin();
@@ -1674,6 +1893,7 @@ createApp({
                         duration_minutes: Number(form.duration_minutes),
                         passing_percent: Number(form.passing_percent),
                         is_active: Boolean(form.is_active),
+                        course_id: form.course_id ? Number(form.course_id) : null,
                     });
                     this.success = "Test created.";
                     await this.loadAdmin();
@@ -2057,18 +2277,42 @@ createApp({
             try {
                 const data = await this.request("GET", "/webapi/admin/overview");
                 this.admin.users = data.users || [];
+                this.admin.courses = (data.courses || []).map((course) => ({
+                    ...course,
+                    id: Number(course.id),
+                    is_active: course.is_active !== false,
+                    linked_tests: Array.isArray(course.linked_tests)
+                        ? course.linked_tests.map((item) => ({
+                              ...item,
+                              id: Number(item.id),
+                              course_id: item.course_id == null ? null : Number(item.course_id),
+                              question_count: Number(item.question_count || 0),
+                              duration_minutes: Math.max(1, Math.floor(Number(item.duration_seconds || 0) / 60)),
+                          }))
+                        : [],
+                }));
                 this.admin.sections = (data.sections || []).map((section) => this.normalizeAdminSection(section));
                 this.admin.questions = data.questions || [];
                 this.admin.test_configs = (data.test_configs || []).map((item) => ({
                     ...item,
+                    course_id: item.course_id == null ? null : Number(item.course_id),
                     duration_minutes: Math.max(1, Math.floor(Number(item.duration_seconds || 0) / 60)),
                 }));
-                if (!["tests", "users", "stats"].includes(this.admin.activeTab)) {
+                if (!["tests", "users", "stats", "courses"].includes(this.admin.activeTab)) {
                     this.admin.activeTab = "tests";
                 }
                 const availableConfigIds = new Set(this.admin.test_configs.map((item) => item.id));
                 if (!availableConfigIds.has(Number(this.admin.selectedTestConfigId))) {
                     this.admin.selectedTestConfigId = this.admin.test_configs.length ? this.admin.test_configs[0].id : 0;
+                }
+                const availableCourseIds = new Set(this.admin.courses.map((item) => item.id));
+                if (!availableCourseIds.has(Number(this.admin.selectedCourseId))) {
+                    this.admin.selectedCourseId = this.admin.courses.length ? this.admin.courses[0].id : 0;
+                    if (this.admin.selectedCourseId) {
+                        this.prepareEditCourse(this.activeAdminCourse);
+                    } else {
+                        this.resetCourseForm();
+                    }
                 }
                 const availableQuestionConfigIds = new Set(this.admin.test_configs.map((item) => item.id));
                 if (!availableQuestionConfigIds.has(Number(this.admin.questionForm.test_config_id))) {

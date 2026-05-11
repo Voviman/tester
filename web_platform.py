@@ -56,6 +56,7 @@ class ConfigUpdateIn(BaseModel):
     duration_minutes: int = Field(ge=1)
     passing_percent: float = Field(gt=0, le=100)
     is_active: bool = True
+    course_id: int | None = None
 
 
 class ConfigCreateIn(BaseModel):
@@ -64,6 +65,20 @@ class ConfigCreateIn(BaseModel):
     duration_minutes: int = Field(ge=1)
     passing_percent: float = Field(gt=0, le=100)
     is_active: bool = True
+    course_id: int | None = None
+
+
+class CourseIn(BaseModel):
+    title: str = Field(min_length=1, max_length=180)
+    summary: str = ""
+    content: str = ""
+    is_active: bool = True
+
+
+class TestAccessOverrideIn(BaseModel):
+    user_id: int
+    test_config_id: int
+    grant: bool = True
 
 
 class QuestionCreateIn(BaseModel):
@@ -379,6 +394,12 @@ def webapi_tests_disqualify(request: Request, attempt_id: int):
     return api_request(token, "POST", f"/tests/disqualify/{attempt_id}")
 
 
+@app.post("/webapi/courses/{course_id}/complete")
+def webapi_complete_course(request: Request, course_id: int):
+    token = require_token(request)
+    return api_request(token, "POST", f"/courses/{course_id}/complete")
+
+
 @app.get("/webapi/community/users/{user_id}/profile")
 def webapi_community_user_profile(request: Request, user_id: int):
     token = require_token(request)
@@ -395,6 +416,30 @@ def webapi_admin_overview(request: Request):
 def webapi_admin_user_stats(request: Request, user_id: int):
     token = require_token(request)
     return api_request(token, "GET", f"/admin/users/{user_id}/stats")
+
+
+@app.post("/webapi/admin/courses")
+def webapi_admin_create_course(request: Request, payload: CourseIn):
+    token = require_token(request)
+    return api_request(token, "POST", "/admin/courses", json=payload.model_dump())
+
+
+@app.patch("/webapi/admin/courses/{course_id}")
+def webapi_admin_update_course(request: Request, course_id: int, payload: CourseIn):
+    token = require_token(request)
+    return api_request(token, "PATCH", f"/admin/courses/{course_id}", json=payload.model_dump())
+
+
+@app.delete("/webapi/admin/courses/{course_id}")
+def webapi_admin_delete_course(request: Request, course_id: int):
+    token = require_token(request)
+    return api_request(token, "DELETE", f"/admin/courses/{course_id}")
+
+
+@app.post("/webapi/admin/test-access-overrides")
+def webapi_admin_test_access_override(request: Request, payload: TestAccessOverrideIn):
+    token = require_token(request)
+    return api_request(token, "POST", "/admin/test-access-overrides", json=payload.model_dump())
 
 
 @app.post("/webapi/admin/users")
@@ -439,6 +484,7 @@ def webapi_admin_create_config(request: Request, payload: ConfigCreateIn):
             "duration_seconds": payload.duration_minutes * 60,
             "passing_percent": payload.passing_percent,
             "is_active": payload.is_active,
+            "course_id": payload.course_id,
         },
     )
 
@@ -456,6 +502,7 @@ def webapi_admin_update_config(request: Request, test_config_id: int, payload: C
             "duration_seconds": payload.duration_minutes * 60,
             "passing_percent": payload.passing_percent,
             "is_active": payload.is_active,
+            "course_id": payload.course_id,
         },
     )
 

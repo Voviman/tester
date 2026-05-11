@@ -108,10 +108,41 @@ class TestConfig(Base):
     duration_seconds: Mapped[int] = mapped_column(Integer, default=900)
     passing_percent: Mapped[float] = mapped_column(Float, default=60.0)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    course_id: Mapped[int | None] = mapped_column(ForeignKey("courses.id"), nullable=True, index=True)
 
     questions: Mapped[list["Question"]] = relationship(back_populates="test_config", cascade="all,delete")
     sections: Mapped[list["TestSection"]] = relationship(back_populates="test_config", cascade="all,delete")
     attempts: Mapped[list["Attempt"]] = relationship(back_populates="test_config")
+    course: Mapped["Course | None"] = relationship(back_populates="tests")
+
+
+class Course(Base):
+    __tablename__ = "courses"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    title: Mapped[str] = mapped_column(String(180), index=True)
+    summary: Mapped[str] = mapped_column(Text, default="")
+    content: Mapped[str] = mapped_column(Text, default="")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+
+    tests: Mapped[list[TestConfig]] = relationship(back_populates="course")
+
+
+class CourseCompletion(Base):
+    __tablename__ = "course_completions"
+
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    course_id: Mapped[int] = mapped_column(ForeignKey("courses.id"), primary_key=True)
+    completed_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+
+
+class TestAccessOverride(Base):
+    __tablename__ = "test_access_overrides"
+
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    test_config_id: Mapped[int] = mapped_column(ForeignKey("test_configs.id"), primary_key=True)
+    granted_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
 
 
 class TestSection(Base):
@@ -446,6 +477,7 @@ class TestConfigCreateIn(BaseModel):
     duration_seconds: int = Field(ge=30, le=14_400)
     passing_percent: float = Field(ge=1, le=100)
     is_active: bool = True
+    course_id: int | None = None
 
 
 class TestConfigOut(BaseModel):
@@ -458,6 +490,42 @@ class TestConfigOut(BaseModel):
     question_count: int
     bank_question_count: int
     section_count: int
+    course_id: int | None = None
+    course_title: str | None = None
+    course_completed: bool = False
+    access_override: bool = False
+    can_start: bool = True
+    locked_reason: str | None = None
+
+
+class CourseCreateIn(BaseModel):
+    title: str = Field(min_length=1, max_length=180)
+    summary: str = ""
+    content: str = ""
+    is_active: bool = True
+
+
+class CourseUpdateIn(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=180)
+    summary: str | None = None
+    content: str | None = None
+    is_active: bool | None = None
+
+
+class CourseOut(BaseModel):
+    id: int
+    title: str
+    summary: str
+    content: str
+    is_active: bool
+    completed: bool = False
+    linked_tests: list[TestConfigOut] = Field(default_factory=list)
+
+
+class TestAccessOverrideIn(BaseModel):
+    user_id: int
+    test_config_id: int
+    grant: bool = True
 
 
 class TestSectionCreateIn(BaseModel):
@@ -586,6 +654,7 @@ class UserAdminStatsOut(BaseModel):
 class AdminOverviewOut(BaseModel):
     users: list[UserOut]
     test_configs: list[TestConfigOut]
+    courses: list[CourseOut]
     sections: list[TestSectionOut]
     questions: list[QuestionAdminOut]
 
@@ -605,6 +674,7 @@ class TestConfigUpdateIn(BaseModel):
     duration_seconds: int | None = Field(default=None, ge=30, le=14_400)
     passing_percent: float | None = Field(default=None, ge=1, le=100)
     is_active: bool | None = None
+    course_id: int | None = None
 
 
 class QuestionUpdateIn(BaseModel):
@@ -651,6 +721,7 @@ class SocialResultOut(BaseModel):
 
 
 class SocialDashboardOut(BaseModel):
+    courses: list[CourseOut]
     tests: list[TestConfigOut]
     active_users: list[SocialActiveUserOut]
     recent_results: list[SocialResultOut]
@@ -705,7 +776,28 @@ def configured_question_count(config: TestConfig) -> int:
     return sum(min(max(section.select_count, 0), len(section.questions)) for section in config.sections)
 
 
-def serialize_test_config(config: TestConfig) -> TestConfigOut:
+def user_completed_course_ids(db: Session, user_id: int) -> set[int]:
+    rows = db.scalars(select(CourseCompletion.course_id).where(CourseCompletion.user_id == user_id)).all()
+    return {int(item) for item in rows}
+
+
+def user_override_test_ids(db: Session, user_id: int) -> set[int]:
+    rows = db.scalars(select(TestAccessOverride.test_config_id).where(TestAccessOverride.user_id == user_id)).all()
+    return {int(item) for item in rows}
+
+
+def serialize_test_config(
+    config: TestConfig,
+    *,
+    completed_course_ids: set[int] | None = None,
+    override_test_ids: set[int] | None = None,
+) -> TestConfigOut:
+    completed_course_ids = completed_course_ids or set()
+    override_test_ids = override_test_ids or set()
+    course_id = int(config.course_id) if config.course_id else None
+    course_completed = bool(course_id and course_id in completed_course_ids)
+    access_override = int(config.id) in override_test_ids
+    can_start = not course_id or course_completed or access_override
     return TestConfigOut(
         id=config.id,
         topic_name=config.topic_name,
@@ -716,6 +808,42 @@ def serialize_test_config(config: TestConfig) -> TestConfigOut:
         question_count=configured_question_count(config),
         bank_question_count=len(config.questions),
         section_count=len(config.sections),
+        course_id=course_id,
+        course_title=config.course.title if config.course is not None else None,
+        course_completed=course_completed,
+        access_override=access_override,
+        can_start=can_start,
+        locked_reason=None if can_start else "Finish the linked course before starting this test.",
+    )
+
+
+def serialize_course(
+    course: Course,
+    *,
+    completed_course_ids: set[int] | None = None,
+    override_test_ids: set[int] | None = None,
+    include_tests: bool = True,
+) -> CourseOut:
+    completed_course_ids = completed_course_ids or set()
+    override_test_ids = override_test_ids or set()
+    tests = []
+    if include_tests:
+        tests = [
+            serialize_test_config(
+                test,
+                completed_course_ids=completed_course_ids,
+                override_test_ids=override_test_ids,
+            )
+            for test in sorted(course.tests, key=lambda item: (item.topic_name.lower(), item.level_name.lower(), item.id))
+        ]
+    return CourseOut(
+        id=course.id,
+        title=course.title,
+        summary=course.summary or "",
+        content=course.content or "",
+        is_active=course.is_active,
+        completed=course.id in completed_course_ids,
+        linked_tests=tests,
     )
 
 
@@ -855,16 +983,36 @@ def serialize_social_comment(comment: TestComment, username: str) -> SocialComme
 
 
 def build_social_dashboard(db: Session, current_user: User) -> SocialDashboardOut:
+    completed_course_ids = user_completed_course_ids(db, current_user.id)
+    override_test_ids = user_override_test_ids(db, current_user.id)
+    courses = db.scalars(
+        select(Course)
+        .options(
+            selectinload(Course.tests).selectinload(TestConfig.questions),
+            selectinload(Course.tests).selectinload(TestConfig.sections).selectinload(TestSection.questions),
+            selectinload(Course.tests).selectinload(TestConfig.course),
+        )
+        .where(Course.is_active.is_(True))
+        .order_by(Course.title.asc(), Course.id.asc())
+    ).all()
     tests = db.scalars(
         select(TestConfig)
         .options(
             selectinload(TestConfig.questions),
             selectinload(TestConfig.sections).selectinload(TestSection.questions),
+            selectinload(TestConfig.course),
         )
         .where(TestConfig.is_active.is_(True))
         .order_by(TestConfig.topic_name.asc(), TestConfig.level_name.asc())
     ).all()
-    tests_out = [serialize_test_config(item) for item in tests]
+    tests_out = [
+        serialize_test_config(item, completed_course_ids=completed_course_ids, override_test_ids=override_test_ids)
+        for item in tests
+    ]
+    courses_out = [
+        serialize_course(item, completed_course_ids=completed_course_ids, override_test_ids=override_test_ids)
+        for item in courses
+    ]
 
     following_ids = db.scalars(
         select(UserFollow.following_id).where(UserFollow.follower_id == current_user.id)
@@ -976,6 +1124,7 @@ def build_social_dashboard(db: Session, current_user: User) -> SocialDashboardOu
         active_users.sort(key=lambda item: (-item.tests_done, item.username.lower()))
 
     return SocialDashboardOut(
+        courses=courses_out,
         tests=tests_out,
         active_users=active_users[:30],
         recent_results=recent_results,
@@ -1093,6 +1242,9 @@ def on_startup():
             conn.execute(text("ALTER TABLE attempts ADD COLUMN option_orders_json TEXT"))
         if "attempts" in columns_by_table and "answers_json" not in attempt_columns:
             conn.execute(text("ALTER TABLE attempts ADD COLUMN answers_json TEXT"))
+        test_config_columns = columns_by_table.get("test_configs", set())
+        if "test_configs" in columns_by_table and "course_id" not in test_config_columns:
+            conn.execute(text("ALTER TABLE test_configs ADD COLUMN course_id INTEGER"))
         section_columns = columns_by_table.get("test_sections", set())
         if "test_sections" in columns_by_table and "order_index" not in section_columns:
             conn.execute(text("ALTER TABLE test_sections ADD COLUMN order_index INTEGER DEFAULT 0"))
@@ -1173,8 +1325,18 @@ def admin_overview(
         .options(
             selectinload(TestConfig.questions),
             selectinload(TestConfig.sections).selectinload(TestSection.questions),
+            selectinload(TestConfig.course),
         )
         .order_by(TestConfig.topic_name, TestConfig.level_name)
+    ).all()
+    courses = db.scalars(
+        select(Course)
+        .options(
+            selectinload(Course.tests).selectinload(TestConfig.questions),
+            selectinload(Course.tests).selectinload(TestConfig.sections).selectinload(TestSection.questions),
+            selectinload(Course.tests).selectinload(TestConfig.course),
+        )
+        .order_by(Course.title.asc(), Course.id.asc())
     ).all()
     sections = db.scalars(
         select(TestSection)
@@ -1185,6 +1347,7 @@ def admin_overview(
     return AdminOverviewOut(
         users=[serialize_user(user) for user in users],
         test_configs=[serialize_test_config(config) for config in configs],
+        courses=[serialize_course(course) for course in courses],
         sections=[serialize_test_section(section) for section in sections],
         questions=[serialize_question_admin(question) for question in questions],
     )
@@ -1202,6 +1365,96 @@ def admin_user_stats(
     if not can_manage_target_user(current_user, user):
         raise HTTPException(status_code=403, detail="You do not have permission to view this user.")
     return build_user_admin_stats(db, user)
+
+
+@app.post("/admin/courses", response_model=CourseOut)
+def admin_create_course(
+    payload: CourseCreateIn,
+    _: Annotated[User, Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))],
+    db: Annotated[Session, Depends(get_db)],
+):
+    title = payload.title.strip()
+    duplicate = db.scalar(select(Course).where(func.lower(Course.title) == title.lower()))
+    if duplicate is not None:
+        raise HTTPException(status_code=409, detail="A course with this title already exists.")
+    course = Course(
+        title=title,
+        summary=payload.summary.strip(),
+        content=payload.content.strip(),
+        is_active=payload.is_active,
+    )
+    db.add(course)
+    db.commit()
+    db.refresh(course)
+    return serialize_course(course)
+
+
+@app.patch("/admin/courses/{course_id}", response_model=CourseOut)
+def admin_update_course(
+    course_id: int,
+    payload: CourseUpdateIn,
+    _: Annotated[User, Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))],
+    db: Annotated[Session, Depends(get_db)],
+):
+    course = db.get(Course, course_id)
+    if course is None:
+        raise HTTPException(status_code=404, detail="Course not found.")
+    if payload.title is not None:
+        title = payload.title.strip()
+        duplicate = db.scalar(select(Course).where(func.lower(Course.title) == title.lower(), Course.id != course.id))
+        if duplicate is not None:
+            raise HTTPException(status_code=409, detail="A course with this title already exists.")
+        course.title = title
+    if payload.summary is not None:
+        course.summary = payload.summary.strip()
+    if payload.content is not None:
+        course.content = payload.content.strip()
+    if payload.is_active is not None:
+        course.is_active = payload.is_active
+    db.commit()
+    db.refresh(course)
+    return serialize_course(course)
+
+
+@app.delete("/admin/courses/{course_id}")
+def admin_delete_course(
+    course_id: int,
+    _: Annotated[User, Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))],
+    db: Annotated[Session, Depends(get_db)],
+):
+    course = db.get(Course, course_id)
+    if course is None:
+        raise HTTPException(status_code=404, detail="Course not found.")
+    for config in course.tests:
+        config.course_id = None
+    db.execute(delete(CourseCompletion).where(CourseCompletion.course_id == course_id))
+    db.delete(course)
+    db.commit()
+    return {"deleted": True}
+
+
+@app.post("/admin/test-access-overrides")
+def admin_set_test_access_override(
+    payload: TestAccessOverrideIn,
+    current_user: Annotated[User, Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))],
+    db: Annotated[Session, Depends(get_db)],
+):
+    user = db.get(User, payload.user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found.")
+    if not can_manage_target_user(current_user, user):
+        raise HTTPException(status_code=403, detail="You do not have permission to modify this user.")
+    config = db.get(TestConfig, payload.test_config_id)
+    if config is None:
+        raise HTTPException(status_code=404, detail="Test config not found.")
+    existing = db.get(TestAccessOverride, {"user_id": user.id, "test_config_id": config.id})
+    if payload.grant:
+        if existing is None:
+            db.add(TestAccessOverride(user_id=user.id, test_config_id=config.id))
+    elif existing is not None:
+        db.delete(existing)
+    db.commit()
+    return {"ok": True, "granted": payload.grant}
 
 
 @app.post("/admin/users", response_model=UserOut)
@@ -1323,6 +1576,8 @@ def admin_delete_user(
         )
     )
     db.execute(delete(TestComment).where(TestComment.user_id == user.id))
+    db.execute(delete(CourseCompletion).where(CourseCompletion.user_id == user.id))
+    db.execute(delete(TestAccessOverride).where(TestAccessOverride.user_id == user.id))
     db.execute(delete(Attempt).where(Attempt.user_id == user.id))
     db.delete(user)
     db.commit()
@@ -1341,10 +1596,13 @@ def admin_upsert_test_config(
             TestConfig.level_name == payload.level_name.strip(),
         )
     )
+    if payload.course_id is not None and db.get(Course, payload.course_id) is None:
+        raise HTTPException(status_code=404, detail="Course not found.")
     if existing:
         existing.duration_seconds = payload.duration_seconds
         existing.passing_percent = payload.passing_percent
         existing.is_active = payload.is_active
+        existing.course_id = payload.course_id
         db.commit()
         db.refresh(existing)
         return serialize_test_config(existing)
@@ -1355,6 +1613,7 @@ def admin_upsert_test_config(
         duration_seconds=payload.duration_seconds,
         passing_percent=payload.passing_percent,
         is_active=payload.is_active,
+        course_id=payload.course_id,
     )
     db.add(config)
     db.commit()
@@ -1372,6 +1631,7 @@ def admin_list_test_configs(
         .options(
             selectinload(TestConfig.questions),
             selectinload(TestConfig.sections).selectinload(TestSection.questions),
+            selectinload(TestConfig.course),
         )
         .order_by(TestConfig.topic_name, TestConfig.level_name)
     ).all()
@@ -1399,6 +1659,10 @@ def admin_update_test_config(
         config.passing_percent = payload.passing_percent
     if payload.is_active is not None:
         config.is_active = payload.is_active
+    if "course_id" in payload.model_fields_set:
+        if payload.course_id is not None and db.get(Course, payload.course_id) is None:
+            raise HTTPException(status_code=404, detail="Course not found.")
+        config.course_id = payload.course_id
 
     db.commit()
     db.refresh(config)
@@ -1423,6 +1687,7 @@ def admin_delete_test_config(
         )
 
     db.execute(delete(TestComment).where(TestComment.test_config_id == test_config_id))
+    db.execute(delete(TestAccessOverride).where(TestAccessOverride.test_config_id == test_config_id))
     db.delete(config)
     db.commit()
     return {"deleted": True}
@@ -1701,21 +1966,46 @@ def admin_delete_question(
     return {"deleted": True}
 
 
-@app.get("/tests/catalog", response_model=list[TestConfigOut])
-def user_list_test_catalog(
-    _: Annotated[User, Depends(get_current_user)],
+@app.post("/courses/{course_id}/complete", response_model=CourseOut)
+def complete_course(
+    course_id: int,
+    current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
 ):
+    course = db.get(Course, course_id)
+    if course is None or not course.is_active:
+        raise HTTPException(status_code=404, detail="Course not found.")
+    existing = db.get(CourseCompletion, {"user_id": current_user.id, "course_id": course.id})
+    if existing is None:
+        db.add(CourseCompletion(user_id=current_user.id, course_id=course.id))
+        db.commit()
+        db.refresh(course)
+    completed_course_ids = user_completed_course_ids(db, current_user.id)
+    override_test_ids = user_override_test_ids(db, current_user.id)
+    return serialize_course(course, completed_course_ids=completed_course_ids, override_test_ids=override_test_ids)
+
+
+@app.get("/tests/catalog", response_model=list[TestConfigOut])
+def user_list_test_catalog(
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+):
+    completed_course_ids = user_completed_course_ids(db, current_user.id)
+    override_test_ids = user_override_test_ids(db, current_user.id)
     configs = db.scalars(
         select(TestConfig)
         .options(
             selectinload(TestConfig.questions),
             selectinload(TestConfig.sections).selectinload(TestSection.questions),
+            selectinload(TestConfig.course),
         )
         .where(TestConfig.is_active.is_(True))
         .order_by(TestConfig.topic_name, TestConfig.level_name)
     ).all()
-    return [serialize_test_config(config) for config in configs]
+    return [
+        serialize_test_config(config, completed_course_ids=completed_course_ids, override_test_ids=override_test_ids)
+        for config in configs
+    ]
 
 
 @app.post("/tests/start/{test_config_id}", response_model=TestStartOut)
@@ -1727,6 +2017,11 @@ def user_start_test(
     config = db.get(TestConfig, test_config_id)
     if config is None or not config.is_active:
         raise HTTPException(status_code=404, detail="Test config not found or inactive.")
+    if config.course_id is not None:
+        completed = db.get(CourseCompletion, {"user_id": current_user.id, "course_id": config.course_id}) is not None
+        override = db.get(TestAccessOverride, {"user_id": current_user.id, "test_config_id": config.id}) is not None
+        if not completed and not override:
+            raise HTTPException(status_code=403, detail="Finish the linked course before starting this test.")
     if current_user.credits < 1:
         raise HTTPException(status_code=402, detail="Insufficient credits. 1 credit is required per test try.")
     if len(config.questions) == 0:

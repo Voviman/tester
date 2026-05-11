@@ -21,7 +21,7 @@
                         @click="setView('dashboard')"
                         :disabled="testParticipationActive"
                     >
-                        Dashboard
+                        Courses
                     </button>
                     <button
                         class="nav-btn nav-icon-btn"
@@ -133,6 +133,50 @@
 
                     <div class="main-col">
                         <article class="panel available-tests-panel">
+                            <h2 class="available-tests-heading">Courses</h2>
+                            <div v-if="!dashboardCourses.length" class="empty">No active courses found.</div>
+                            <div v-else class="course-grid">
+                                <section v-for="course in dashboardCourses" :key="course.id" class="course-card">
+                                    <div class="section-head">
+                                        <div>
+                                            <h3>{{ course.title }}</h3>
+                                            <p class="muted small">{{ course.summary || 'Course material' }}</p>
+                                        </div>
+                                        <span :class="['admin-state-badge', course.completed ? 'active' : 'inactive']">
+                                            {{ course.completed ? 'completed' : 'required' }}
+                                        </span>
+                                    </div>
+                                    <div class="course-content">{{ course.content || 'No course content has been added yet.' }}</div>
+                                    <button
+                                        v-if="!course.completed"
+                                        class="btn primary small"
+                                        type="button"
+                                        @click="completeCourse(course)"
+                                        :disabled="busy"
+                                    >
+                                        Mark Course Complete
+                                    </button>
+                                    <div class="course-linked-tests">
+                                        <h4>Linked Tests</h4>
+                                        <div v-if="!course.linked_tests.length" class="empty small">No tests linked to this course.</div>
+                                        <div v-for="test in course.linked_tests" :key="`course-test-${test.id}`" class="course-test-row">
+                                            <span>{{ test.topic_name }} - {{ test.level_name }}</span>
+                                            <button
+                                                type="button"
+                                                class="btn secondary small"
+                                                @click="startParticipateInTest(test)"
+                                                :disabled="busy || testParticipationActive || test.can_start === false || Number(test.question_count || 0) < 1"
+                                                :title="test.can_start === false ? test.locked_reason : 'Start test'"
+                                            >
+                                                {{ test.can_start === false ? 'Locked' : 'Start' }}
+                                            </button>
+                                        </div>
+                                    </div>
+                                </section>
+                            </div>
+                        </article>
+
+                        <article class="panel available-tests-panel">
                             <h2 class="available-tests-heading">Available Tests</h2>
                             <input
                                 v-model.trim="testSearchQuery"
@@ -167,10 +211,13 @@
                                             :disabled="
                                                 busy ||
                                                 testParticipationActive ||
+                                                test.can_start === false ||
                                                 Number(test.question_count || 0) < 1
                                             "
                                             :title="
-                                                Number(test.question_count || 0) < 1
+                                                test.can_start === false
+                                                    ? test.locked_reason
+                                                    : Number(test.question_count || 0) < 1
                                                     ? 'This test has no questions yet.'
                                                     : 'Use one credit to begin this timed test.'
                                             "
@@ -650,6 +697,16 @@
                             </button>
                             <button
                                 class="admin-nav-btn"
+                                :class="{ active: admin.activeTab === 'courses' }"
+                                @click="setAdminTab('courses')"
+                                :disabled="busy"
+                                title="Course Manager"
+                            >
+                                <i class="bi bi-mortarboard icon" aria-hidden="true"></i>
+                                <span class="admin-nav-mini">Courses</span>
+                            </button>
+                            <button
+                                class="admin-nav-btn"
                                 :class="{ active: admin.activeTab === 'stats' }"
                                 @click="setAdminTab('stats')"
                                 :disabled="busy"
@@ -663,8 +720,9 @@
 
                     <aside class="panel admin-catalog">
                         <div class="section-head">
-                            <h3>{{ admin.activeTab === 'tests' ? 'Tests Available' : admin.activeTab === 'stats' ? 'User Statistics' : 'Users' }}</h3>
+                            <h3>{{ admin.activeTab === 'tests' ? 'Tests Available' : admin.activeTab === 'courses' ? 'Courses' : admin.activeTab === 'stats' ? 'User Statistics' : 'Users' }}</h3>
                             <span class="small muted" v-if="admin.activeTab === 'tests'">{{ filteredAdminTestConfigs.length }}</span>
+                            <span class="small muted" v-else-if="admin.activeTab === 'courses'">{{ admin.courses.length }}</span>
                             <span class="small muted" v-else>{{ filteredAdminUsers.length }}</span>
                         </div>
 
@@ -676,7 +734,7 @@
                             placeholder="Search tests"
                         >
                         <input
-                            v-else
+                            v-else-if="admin.activeTab !== 'courses'"
                             v-model.trim="admin.userSearchQuery"
                             class="admin-sidebar-input"
                             type="search"
@@ -687,7 +745,7 @@
                                 v-if="admin.activeTab !== 'stats'"
                                 class="admin-catalog-action-btn"
                                 type="button"
-                                @click="admin.activeTab === 'tests' ? openCreateTestMode() : openCreateUserMode()"
+                                @click="admin.activeTab === 'tests' ? openCreateTestMode() : admin.activeTab === 'courses' ? resetCourseForm() : openCreateUserMode()"
                                 :disabled="busy"
                                 aria-label="Create"
                                 title="Create"
@@ -698,8 +756,8 @@
                                 v-if="admin.activeTab !== 'stats'"
                                 class="admin-catalog-action-btn"
                                 type="button"
-                                @click="admin.activeTab === 'tests' ? openUpdateTestMode() : openUpdateUserMode()"
-                                :disabled="busy || (admin.activeTab === 'tests' ? !activeAdminTestConfig : !activeAdminUser)"
+                                @click="admin.activeTab === 'tests' ? openUpdateTestMode() : admin.activeTab === 'courses' ? prepareEditCourse(activeAdminCourse) : openUpdateUserMode()"
+                                :disabled="busy || (admin.activeTab === 'tests' ? !activeAdminTestConfig : admin.activeTab === 'courses' ? !activeAdminCourse : !activeAdminUser)"
                                 aria-label="Edit"
                                 title="Edit"
                             >
@@ -709,8 +767,8 @@
                                 v-if="admin.activeTab !== 'stats'"
                                 class="admin-catalog-action-btn danger"
                                 type="button"
-                                @click="admin.activeTab === 'tests' ? requestDeleteAdminTest() : requestDeleteAdminUser()"
-                                :disabled="busy || (admin.activeTab === 'tests' ? !activeAdminTestConfig : !activeAdminUser)"
+                                @click="admin.activeTab === 'tests' ? requestDeleteAdminTest() : admin.activeTab === 'courses' ? openConfirmModal('Delete Course', 'Delete this course? Linked tests will remain but no longer require it.', 'delete-course') : requestDeleteAdminUser()"
+                                :disabled="busy || (admin.activeTab === 'tests' ? !activeAdminTestConfig : admin.activeTab === 'courses' ? !activeAdminCourse : !activeAdminUser)"
                                 aria-label="Remove"
                                 title="Remove"
                             >
@@ -745,6 +803,23 @@
                                 </span>
                                 <span :class="['admin-state-badge', cfg.is_active ? 'active' : 'inactive']">
                                     {{ cfg.is_active ? 'active' : 'inactive' }}
+                                </span>
+                            </button>
+                        </div>
+
+                        <div class="admin-catalog-list" v-else-if="admin.activeTab === 'courses'">
+                            <div v-if="!admin.courses.length" class="empty small">No courses available.</div>
+                            <button
+                                v-for="course in admin.courses"
+                                :key="course.id"
+                                class="admin-catalog-item compact"
+                                :class="{ active: activeAdminCourse && activeAdminCourse.id === course.id }"
+                                @click="selectAdminCourse(course.id)"
+                            >
+                                <strong>{{ course.title }}</strong>
+                                <span class="small muted">{{ (course.linked_tests || []).length }} linked tests</span>
+                                <span :class="['admin-state-badge', course.is_active ? 'active' : 'inactive']">
+                                    {{ course.is_active ? 'active' : 'inactive' }}
                                 </span>
                             </button>
                         </div>
@@ -950,6 +1025,93 @@
                             </article>
                         </template>
 
+                        <article v-else-if="admin.activeTab === 'courses'" class="panel admin-user-stats-panel">
+                            <div class="section-head">
+                                <div>
+                                    <h2>Course Manager</h2>
+                                    <div class="small muted">Create course content, link tests, and control whether the course is active.</div>
+                                </div>
+                            </div>
+                            <div class="form-grid admin-test-form">
+                                <input v-model.trim="admin.courseForm.title" placeholder="Course title">
+                                <select v-model="admin.courseForm.is_active">
+                                    <option :value="true">active</option>
+                                    <option :value="false">inactive</option>
+                                </select>
+                                <textarea v-model.trim="admin.courseForm.summary" rows="2" placeholder="Short summary"></textarea>
+                                <textarea v-model.trim="admin.courseForm.content" rows="8" placeholder="Course content, instructions, links, or reading material"></textarea>
+                                <div class="admin-modal-actions">
+                                    <button class="btn secondary" type="button" @click="resetCourseForm" :disabled="busy">New Course</button>
+                                    <button class="btn primary" type="button" @click="saveAdminCourse" :disabled="busy">
+                                        {{ admin.courseFormMode === 'update' ? 'Update Course' : 'Create Course' }}
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div v-if="activeAdminCourse" class="admin-section-manager">
+                                <div class="admin-section-head">
+                                    <h3>Linked Tests</h3>
+                                    <span class="small muted">{{ (activeAdminCourse.linked_tests || []).length }}</span>
+                                </div>
+                                <div class="admin-section-form">
+                                    <label class="admin-section-field section-name-field">
+                                        <span>Test</span>
+                                        <select v-model.number="admin.courseForm.linked_test_id">
+                                            <option :value="0">Select test</option>
+                                            <option v-for="cfg in admin.test_configs" :key="`link-${cfg.id}`" :value="cfg.id">
+                                                {{ cfg.topic_name }} - {{ cfg.level_name }}
+                                            </option>
+                                        </select>
+                                    </label>
+                                    <button class="btn secondary small" type="button" @click="linkSelectedTestToCourse" :disabled="busy || !admin.courseForm.linked_test_id">
+                                        Link Test
+                                    </button>
+                                </div>
+                                <div v-if="!(activeAdminCourse.linked_tests || []).length" class="empty small">No tests linked yet.</div>
+                                <div v-else class="admin-catalog-list">
+                                    <div v-for="test in activeAdminCourse.linked_tests" :key="`linked-admin-${test.id}`" class="admin-catalog-item compact">
+                                        <strong>{{ test.topic_name }} - {{ test.level_name }}</strong>
+                                        <span class="small muted">{{ test.question_count }} questions</span>
+                                        <button class="btn secondary small" type="button" @click="unlinkTestFromCourse(test)" :disabled="busy">Unlink</button>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="admin-section-manager">
+                                <div class="admin-section-head">
+                                    <h3>Closed Test Access</h3>
+                                </div>
+                                <div class="admin-section-form">
+                                    <label class="admin-section-field">
+                                        <span>User</span>
+                                        <select v-model.number="admin.accessGrant.user_id">
+                                            <option :value="0">Select user</option>
+                                            <option v-for="user in admin.users" :key="`grant-user-${user.id}`" :value="user.id">
+                                                {{ user.username }}
+                                            </option>
+                                        </select>
+                                    </label>
+                                    <label class="admin-section-field">
+                                        <span>Test</span>
+                                        <select v-model.number="admin.accessGrant.test_config_id">
+                                            <option :value="0">Select test</option>
+                                            <option v-for="cfg in admin.test_configs.filter((item) => item.course_id)" :key="`grant-test-${cfg.id}`" :value="cfg.id">
+                                                {{ cfg.topic_name }} - {{ cfg.level_name }}
+                                            </option>
+                                        </select>
+                                    </label>
+                                    <label class="admin-section-field">
+                                        <span>Action</span>
+                                        <select v-model="admin.accessGrant.grant">
+                                            <option :value="true">Grant access</option>
+                                            <option :value="false">Remove access</option>
+                                        </select>
+                                    </label>
+                                    <button class="btn primary small" type="button" @click="saveTestAccessOverride" :disabled="busy">Save Access</button>
+                                </div>
+                            </div>
+                        </article>
+
                         <article v-else-if="admin.activeTab === 'users'" class="panel">
                             <h2>User Manager</h2>
                             <div v-if="activeAdminUser" class="small muted">
@@ -1134,6 +1296,12 @@
                                 <input v-model.trim="admin.testForm.level_name" placeholder="Level name">
                                 <input v-model.number="admin.testForm.duration_minutes" type="number" min="1" placeholder="Duration (minutes)">
                                 <input v-model.number="admin.testForm.passing_percent" type="number" min="1" max="100" step="0.01" placeholder="Passing %">
+                                <select v-model="admin.testForm.course_id">
+                                    <option :value="null">No linked course</option>
+                                    <option v-for="course in admin.courses" :key="`test-course-${course.id}`" :value="course.id">
+                                        {{ course.title }}
+                                    </option>
+                                </select>
                                 <select v-model="admin.testForm.is_active">
                                     <option :value="true">active</option>
                                     <option :value="false">inactive</option>
