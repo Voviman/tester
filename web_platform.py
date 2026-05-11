@@ -75,6 +75,16 @@ class CourseIn(BaseModel):
     is_active: bool = True
 
 
+class CourseModuleIn(BaseModel):
+    course_id: int
+    title: str = Field(min_length=1, max_length=180)
+    module_type: str = "markdown"
+    content: str = ""
+    resource_url: str = ""
+    order_index: int | None = None
+    is_active: bool = True
+
+
 class TestAccessOverrideIn(BaseModel):
     user_id: int
     test_config_id: int
@@ -197,7 +207,7 @@ def api_request(
         if response.text:
             detail = response.text
     if response.status_code == 404 and path.startswith(
-        ("/admin/courses", "/courses/", "/admin/test-access-overrides")
+        ("/admin/courses", "/admin/course-modules", "/courses/", "/admin/test-access-overrides")
     ):
         detail = (
             "Course API is not available on the configured backend. "
@@ -402,10 +412,10 @@ def webapi_tests_disqualify(request: Request, attempt_id: int):
     return api_request(token, "POST", f"/tests/disqualify/{attempt_id}")
 
 
-@app.post("/webapi/courses/{course_id}/complete")
-def webapi_complete_course(request: Request, course_id: int):
+@app.post("/webapi/courses/{course_id}/modules/{module_id}/open")
+def webapi_open_course_module(request: Request, course_id: int, module_id: int):
     token = require_token(request)
-    return api_request(token, "POST", f"/courses/{course_id}/complete")
+    return api_request(token, "POST", f"/courses/{course_id}/modules/{module_id}/open")
 
 
 @app.get("/webapi/community/users/{user_id}/profile")
@@ -442,6 +452,26 @@ def webapi_admin_update_course(request: Request, course_id: int, payload: Course
 def webapi_admin_delete_course(request: Request, course_id: int):
     token = require_token(request)
     return api_request(token, "DELETE", f"/admin/courses/{course_id}")
+
+
+@app.post("/webapi/admin/course-modules")
+def webapi_admin_create_course_module(request: Request, payload: CourseModuleIn):
+    token = require_token(request)
+    return api_request(token, "POST", "/admin/course-modules", json=payload.model_dump(exclude_none=True))
+
+
+@app.patch("/webapi/admin/course-modules/{module_id}")
+def webapi_admin_update_course_module(request: Request, module_id: int, payload: CourseModuleIn):
+    token = require_token(request)
+    data = payload.model_dump(exclude_none=True)
+    data.pop("course_id", None)
+    return api_request(token, "PATCH", f"/admin/course-modules/{module_id}", json=data)
+
+
+@app.delete("/webapi/admin/course-modules/{module_id}")
+def webapi_admin_delete_course_module(request: Request, module_id: int):
+    token = require_token(request)
+    return api_request(token, "DELETE", f"/admin/course-modules/{module_id}")
 
 
 @app.post("/webapi/admin/test-access-overrides")

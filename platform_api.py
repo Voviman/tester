@@ -127,6 +127,22 @@ class Course(Base):
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
 
     tests: Mapped[list[TestConfig]] = relationship(back_populates="course")
+    modules: Mapped[list["CourseModule"]] = relationship(back_populates="course", cascade="all,delete")
+
+
+class CourseModule(Base):
+    __tablename__ = "course_modules"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    course_id: Mapped[int] = mapped_column(ForeignKey("courses.id"), index=True)
+    title: Mapped[str] = mapped_column(String(180), index=True)
+    module_type: Mapped[str] = mapped_column(String(40), default="markdown")
+    content: Mapped[str] = mapped_column(Text, default="")
+    resource_url: Mapped[str] = mapped_column(Text, default="")
+    order_index: Mapped[int] = mapped_column(Integer, default=0)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    course: Mapped[Course] = relationship(back_populates="modules")
 
 
 class CourseCompletion(Base):
@@ -512,6 +528,36 @@ class CourseUpdateIn(BaseModel):
     is_active: bool | None = None
 
 
+class CourseModuleCreateIn(BaseModel):
+    course_id: int
+    title: str = Field(min_length=1, max_length=180)
+    module_type: str = "markdown"
+    content: str = ""
+    resource_url: str = ""
+    is_active: bool = True
+
+
+class CourseModuleUpdateIn(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=180)
+    module_type: str | None = None
+    content: str | None = None
+    resource_url: str | None = None
+    order_index: int | None = None
+    is_active: bool | None = None
+
+
+class CourseModuleOut(BaseModel):
+    id: int
+    course_id: int
+    title: str
+    module_type: str
+    content: str
+    resource_url: str
+    order_index: int
+    is_active: bool
+    is_last: bool = False
+
+
 class CourseOut(BaseModel):
     id: int
     title: str
@@ -519,6 +565,7 @@ class CourseOut(BaseModel):
     content: str
     is_active: bool
     completed: bool = False
+    modules: list[CourseModuleOut] = Field(default_factory=list)
     linked_tests: list[TestConfigOut] = Field(default_factory=list)
 
 
@@ -817,6 +864,31 @@ def serialize_test_config(
     )
 
 
+def normalize_module_type(value: str | None) -> str:
+    normalized = str(value or "markdown").strip().lower().replace("-", "_")
+    if normalized in {"doc", "docs", "document", "pdf"}:
+        return "document"
+    if normalized in {"ppt", "pptx", "presentation", "slides"}:
+        return "presentation"
+    if normalized in {"video", "youtube", "vimeo"}:
+        return "video"
+    return "markdown"
+
+
+def serialize_course_module(module: CourseModule, *, last_module_id: int | None = None) -> CourseModuleOut:
+    return CourseModuleOut(
+        id=module.id,
+        course_id=module.course_id,
+        title=module.title,
+        module_type=normalize_module_type(module.module_type),
+        content=module.content or "",
+        resource_url=module.resource_url or "",
+        order_index=module.order_index,
+        is_active=module.is_active,
+        is_last=bool(last_module_id and module.id == last_module_id),
+    )
+
+
 def serialize_course(
     course: Course,
     *,
@@ -836,6 +908,15 @@ def serialize_course(
             )
             for test in sorted(course.tests, key=lambda item: (item.topic_name.lower(), item.level_name.lower(), item.id))
         ]
+    active_modules = sorted(
+        [module for module in course.modules if module.is_active],
+        key=lambda item: (item.order_index, item.id),
+    )
+    last_module_id = active_modules[-1].id if active_modules else None
+    modules = [
+        serialize_course_module(module, last_module_id=last_module_id)
+        for module in sorted(course.modules, key=lambda item: (item.order_index, item.id))
+    ]
     return CourseOut(
         id=course.id,
         title=course.title,
@@ -843,6 +924,7 @@ def serialize_course(
         content=course.content or "",
         is_active=course.is_active,
         completed=course.id in completed_course_ids,
+        modules=modules,
         linked_tests=tests,
     )
 
@@ -988,6 +1070,7 @@ def build_social_dashboard(db: Session, current_user: User) -> SocialDashboardOu
     courses = db.scalars(
         select(Course)
         .options(
+            selectinload(Course.modules),
             selectinload(Course.tests).selectinload(TestConfig.questions),
             selectinload(Course.tests).selectinload(TestConfig.sections).selectinload(TestSection.questions),
             selectinload(Course.tests).selectinload(TestConfig.course),
@@ -1332,6 +1415,7 @@ def admin_overview(
     courses = db.scalars(
         select(Course)
         .options(
+            selectinload(Course.modules),
             selectinload(Course.tests).selectinload(TestConfig.questions),
             selectinload(Course.tests).selectinload(TestConfig.sections).selectinload(TestSection.questions),
             selectinload(Course.tests).selectinload(TestConfig.course),
@@ -1414,6 +1498,75 @@ def admin_update_course(
     db.commit()
     db.refresh(course)
     return serialize_course(course)
+
+
+@app.post("/admin/course-modules", response_model=CourseModuleOut)
+def admin_create_course_module(
+    payload: CourseModuleCreateIn,
+    _: Annotated[User, Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))],
+    db: Annotated[Session, Depends(get_db)],
+):
+    course = db.get(Course, payload.course_id)
+    if course is None:
+        raise HTTPException(status_code=404, detail="Course not found.")
+    next_order = (
+        db.scalar(select(func.max(CourseModule.order_index)).where(CourseModule.course_id == course.id))
+        or 0
+    ) + 1
+    module = CourseModule(
+        course_id=course.id,
+        title=payload.title.strip(),
+        module_type=normalize_module_type(payload.module_type),
+        content=payload.content.strip(),
+        resource_url=payload.resource_url.strip(),
+        order_index=next_order,
+        is_active=payload.is_active,
+    )
+    db.add(module)
+    db.commit()
+    db.refresh(module)
+    return serialize_course_module(module)
+
+
+@app.patch("/admin/course-modules/{module_id}", response_model=CourseModuleOut)
+def admin_update_course_module(
+    module_id: int,
+    payload: CourseModuleUpdateIn,
+    _: Annotated[User, Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))],
+    db: Annotated[Session, Depends(get_db)],
+):
+    module = db.get(CourseModule, module_id)
+    if module is None:
+        raise HTTPException(status_code=404, detail="Module not found.")
+    if payload.title is not None:
+        module.title = payload.title.strip()
+    if payload.module_type is not None:
+        module.module_type = normalize_module_type(payload.module_type)
+    if payload.content is not None:
+        module.content = payload.content.strip()
+    if payload.resource_url is not None:
+        module.resource_url = payload.resource_url.strip()
+    if payload.order_index is not None:
+        module.order_index = payload.order_index
+    if payload.is_active is not None:
+        module.is_active = payload.is_active
+    db.commit()
+    db.refresh(module)
+    return serialize_course_module(module)
+
+
+@app.delete("/admin/course-modules/{module_id}")
+def admin_delete_course_module(
+    module_id: int,
+    _: Annotated[User, Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))],
+    db: Annotated[Session, Depends(get_db)],
+):
+    module = db.get(CourseModule, module_id)
+    if module is None:
+        raise HTTPException(status_code=404, detail="Module not found.")
+    db.delete(module)
+    db.commit()
+    return {"deleted": True}
 
 
 @app.delete("/admin/courses/{course_id}")
@@ -1966,17 +2119,27 @@ def admin_delete_question(
     return {"deleted": True}
 
 
-@app.post("/courses/{course_id}/complete", response_model=CourseOut)
-def complete_course(
+@app.post("/courses/{course_id}/modules/{module_id}/open", response_model=CourseOut)
+def open_course_module(
     course_id: int,
+    module_id: int,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
 ):
     course = db.get(Course, course_id)
     if course is None or not course.is_active:
         raise HTTPException(status_code=404, detail="Course not found.")
-    existing = db.get(CourseCompletion, {"user_id": current_user.id, "course_id": course.id})
-    if existing is None:
+    module = db.get(CourseModule, module_id)
+    if module is None or module.course_id != course.id or not module.is_active:
+        raise HTTPException(status_code=404, detail="Module not found.")
+    active_modules = sorted(
+        [item for item in course.modules if item.is_active],
+        key=lambda item: (item.order_index, item.id),
+    )
+    if active_modules and active_modules[-1].id == module.id and db.get(
+        CourseCompletion,
+        {"user_id": current_user.id, "course_id": course.id},
+    ) is None:
         db.add(CourseCompletion(user_id=current_user.id, course_id=course.id))
         db.commit()
         db.refresh(course)

@@ -69,6 +69,7 @@ createApp({
             profileLoading: false,
             desktopParticipationToken: "",
             testSession: null,
+            activeCourseSession: null,
             admin: {
                 users: [],
                 test_configs: [],
@@ -120,6 +121,17 @@ createApp({
                     content: "",
                     is_active: true,
                     linked_test_id: 0,
+                },
+                moduleFormMode: "create",
+                moduleForm: {
+                    id: 0,
+                    course_id: 0,
+                    title: "",
+                    module_type: "markdown",
+                    content: "",
+                    resource_url: "",
+                    order_index: 0,
+                    is_active: true,
                 },
                 accessGrant: {
                     user_id: 0,
@@ -625,6 +637,16 @@ createApp({
                                     access_override: Boolean(t.access_override),
                                 }))
                               : [],
+                          modules: Array.isArray(c.modules)
+                              ? c.modules.map((m) => ({
+                                    ...m,
+                                    id: Number(m.id),
+                                    course_id: Number(m.course_id),
+                                    order_index: Number(m.order_index || 0),
+                                    is_active: m.is_active !== false,
+                                    is_last: Boolean(m.is_last),
+                                }))
+                              : [],
                       }))
                     : [],
                 tests: Array.isArray(socialRaw.tests)
@@ -1098,19 +1120,86 @@ createApp({
             }
         },
         async completeCourse(course) {
+            const modules = Array.isArray(course?.modules) ? course.modules.filter((item) => item.is_active !== false) : [];
+            if (!modules.length) {
+                this.error = "This course has no active modules yet.";
+                return;
+            }
+            this.activeCourseSession = {
+                courseId: Number(course.id),
+                currentIndex: 0,
+                course,
+            };
+            await this.openCourseModule(course, modules[0], 0);
+        },
+        async openCourseModule(course, module, index = 0) {
             const courseId = Number(course?.id || 0);
-            if (!courseId || this.busy) return;
+            const moduleId = Number(module?.id || 0);
+            if (!courseId || !moduleId || this.busy) return;
             this.clearNotices();
             this.busy = true;
             try {
-                await this.request("POST", `/webapi/courses/${courseId}/complete`, null);
-                this.success = "Course completed. Linked tests are now unlocked.";
+                const updatedCourse = await this.request(
+                    "POST",
+                    `/webapi/courses/${courseId}/modules/${moduleId}/open`,
+                    null,
+                );
+                this.activeCourseSession = {
+                    courseId,
+                    currentIndex: Number(index || 0),
+                    course: updatedCourse || course,
+                };
+                if (updatedCourse?.completed) {
+                    this.success = "Course completed. Linked tests are now unlocked.";
+                }
                 await this.loadDashboard({ silent: true });
             } catch (error) {
                 this.error = error.message;
             } finally {
                 this.busy = false;
             }
+        },
+        closeCourseSession() {
+            this.activeCourseSession = null;
+        },
+        currentCourseModules() {
+            return (this.activeCourseSession?.course?.modules || []).filter((item) => item.is_active !== false);
+        },
+        currentCourseModule() {
+            const modules = this.currentCourseModules();
+            return modules[Number(this.activeCourseSession?.currentIndex || 0)] || null;
+        },
+        async nextCourseModule() {
+            const modules = this.currentCourseModules();
+            const nextIndex = Number(this.activeCourseSession?.currentIndex || 0) + 1;
+            if (nextIndex >= modules.length) return;
+            await this.openCourseModule(this.activeCourseSession.course, modules[nextIndex], nextIndex);
+        },
+        renderMarkdown(value) {
+            const escaped = String(value || "")
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;");
+            return escaped
+                .replace(/^### (.*)$/gm, "<h3>$1</h3>")
+                .replace(/^## (.*)$/gm, "<h2>$1</h2>")
+                .replace(/^# (.*)$/gm, "<h1>$1</h1>")
+                .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
+                .replace(/\*(.*?)\*/g, "<em>$1</em>")
+                .replace(/`([^`]+)`/g, "<code>$1</code>")
+                .replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+                .replace(/\n/g, "<br>");
+        },
+        officeViewerUrl(url) {
+            const value = String(url || "").trim();
+            if (!value) return "";
+            return `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(value)}`;
+        },
+        videoEmbedUrl(url) {
+            const value = String(url || "").trim();
+            const yt = value.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([A-Za-z0-9_-]+)/);
+            if (yt) return `https://www.youtube.com/embed/${yt[1]}`;
+            return value;
         },
         async disqualifyParticipationTest(reason = "Anti-cheat warning limit reached.") {
             const session = this.testSession;
@@ -1312,6 +1401,33 @@ createApp({
                 content: String(course?.content || ""),
                 is_active: course?.is_active !== false,
                 linked_test_id: 0,
+            };
+            this.resetModuleForm(Number(course?.id || 0));
+        },
+        resetModuleForm(courseId = 0) {
+            this.admin.moduleFormMode = "create";
+            this.admin.moduleForm = {
+                id: 0,
+                course_id: Number(courseId || this.activeAdminCourse?.id || 0),
+                title: "",
+                module_type: "markdown",
+                content: "",
+                resource_url: "",
+                order_index: 0,
+                is_active: true,
+            };
+        },
+        editCourseModule(module) {
+            this.admin.moduleFormMode = "update";
+            this.admin.moduleForm = {
+                id: Number(module?.id || 0),
+                course_id: Number(module?.course_id || this.activeAdminCourse?.id || 0),
+                title: String(module?.title || ""),
+                module_type: String(module?.module_type || "markdown"),
+                content: String(module?.content || ""),
+                resource_url: String(module?.resource_url || ""),
+                order_index: Number(module?.order_index || 0),
+                is_active: module?.is_active !== false,
             };
         },
         openCreateTestMode() {
@@ -1793,6 +1909,57 @@ createApp({
                 this.success = "Course deleted.";
                 this.resetCourseForm();
                 await this.loadAdmin();
+            } catch (error) {
+                this.error = error.message;
+            } finally {
+                this.busy = false;
+            }
+        },
+        async saveCourseModule() {
+            const form = this.admin.moduleForm;
+            const courseId = Number(form.course_id || this.activeAdminCourse?.id || 0);
+            if (!courseId) {
+                this.error = "Create or select a course before saving a module.";
+                return;
+            }
+            if (!String(form.title || "").trim()) {
+                this.error = "Module title is required.";
+                return;
+            }
+            this.busy = true;
+            try {
+                const payload = {
+                    course_id: courseId,
+                    title: String(form.title || "").trim(),
+                    module_type: String(form.module_type || "markdown"),
+                    content: String(form.content || "").trim(),
+                    resource_url: String(form.resource_url || "").trim(),
+                    order_index: Number(form.order_index || 0),
+                    is_active: Boolean(form.is_active),
+                };
+                if (this.admin.moduleFormMode === "update" && form.id) {
+                    await this.request("PATCH", `/webapi/admin/course-modules/${form.id}`, payload);
+                    this.success = "Module updated.";
+                } else {
+                    await this.request("POST", "/webapi/admin/course-modules", payload);
+                    this.success = "Module added.";
+                }
+                await this.loadAdmin();
+                this.resetModuleForm(courseId);
+            } catch (error) {
+                this.error = error.message;
+            } finally {
+                this.busy = false;
+            }
+        },
+        async deleteCourseModule(module) {
+            if (!module?.id) return;
+            this.busy = true;
+            try {
+                await this.request("DELETE", `/webapi/admin/course-modules/${module.id}`);
+                this.success = "Module deleted.";
+                await this.loadAdmin();
+                this.resetModuleForm(Number(module.course_id || 0));
             } catch (error) {
                 this.error = error.message;
             } finally {
@@ -2288,6 +2455,16 @@ createApp({
                               course_id: item.course_id == null ? null : Number(item.course_id),
                               question_count: Number(item.question_count || 0),
                               duration_minutes: Math.max(1, Math.floor(Number(item.duration_seconds || 0) / 60)),
+                          }))
+                        : [],
+                    modules: Array.isArray(course.modules)
+                        ? course.modules.map((item) => ({
+                              ...item,
+                              id: Number(item.id),
+                              course_id: Number(item.course_id),
+                              order_index: Number(item.order_index || 0),
+                              is_active: item.is_active !== false,
+                              is_last: Boolean(item.is_last),
                           }))
                         : [],
                 }));

@@ -146,15 +146,14 @@
                                             {{ course.completed ? 'completed' : 'required' }}
                                         </span>
                                     </div>
-                                    <div class="course-content">{{ course.content || 'No course content has been added yet.' }}</div>
+                                    <div class="course-content">{{ course.modules?.length ? course.modules.length + ' module(s)' : 'No modules have been added yet.' }}</div>
                                     <button
-                                        v-if="!course.completed"
                                         class="btn primary small"
                                         type="button"
                                         @click="completeCourse(course)"
-                                        :disabled="busy"
+                                        :disabled="busy || !(course.modules || []).length"
                                     >
-                                        Mark Course Complete
+                                        {{ course.completed ? 'Review Course' : 'Start Course' }}
                                     </button>
                                     <div class="course-linked-tests">
                                         <h4>Linked Tests</h4>
@@ -460,7 +459,70 @@
                     </aside>
                 </section>
 
-                <section v-else-if="view==='profile'" class="profile-page">
+                <div v-if="activeCourseSession" class="admin-modal-backdrop" @click.self="closeCourseSession">
+                    <article class="admin-modal course-module-modal">
+                        <div class="section-head admin-modal-head">
+                            <div>
+                                <h3>{{ activeCourseSession.course.title }}</h3>
+                                <div class="small muted">
+                                    Module {{ Number(activeCourseSession.currentIndex || 0) + 1 }} of {{ currentCourseModules().length }}
+                                </div>
+                            </div>
+                            <button class="admin-close-btn" type="button" @click="closeCourseSession" aria-label="Close">
+                                <i class="bi bi-x-lg" aria-hidden="true"></i>
+                            </button>
+                        </div>
+                        <template v-if="currentCourseModule()">
+                            <h2 class="course-module-title">{{ currentCourseModule().title }}</h2>
+                            <div
+                                v-if="currentCourseModule().module_type === 'markdown'"
+                                class="course-module-rendered"
+                                v-html="renderMarkdown(currentCourseModule().content)"
+                            ></div>
+                            <div v-else-if="currentCourseModule().module_type === 'video'" class="course-module-media">
+                                <iframe
+                                    v-if="currentCourseModule().resource_url"
+                                    :src="videoEmbedUrl(currentCourseModule().resource_url)"
+                                    title="Course video"
+                                    allowfullscreen
+                                ></iframe>
+                                <div v-else class="empty small">No video URL configured.</div>
+                                <div class="course-module-rendered" v-html="renderMarkdown(currentCourseModule().content)"></div>
+                            </div>
+                            <div v-else class="course-module-media">
+                                <iframe
+                                    v-if="currentCourseModule().resource_url"
+                                    :src="officeViewerUrl(currentCourseModule().resource_url)"
+                                    title="Course document"
+                                ></iframe>
+                                <a
+                                    v-if="currentCourseModule().resource_url"
+                                    class="btn secondary small"
+                                    :href="currentCourseModule().resource_url"
+                                    target="_blank"
+                                    rel="noopener"
+                                >
+                                    Open File
+                                </a>
+                                <div v-else class="empty small">No file URL configured.</div>
+                                <div class="course-module-rendered" v-html="renderMarkdown(currentCourseModule().content)"></div>
+                            </div>
+                            <div class="admin-modal-actions">
+                                <button class="btn secondary" type="button" @click="closeCourseSession" :disabled="busy">Close</button>
+                                <button
+                                    class="btn primary"
+                                    type="button"
+                                    @click="nextCourseModule"
+                                    :disabled="busy || Number(activeCourseSession.currentIndex || 0) >= currentCourseModules().length - 1"
+                                >
+                                    Next
+                                </button>
+                            </div>
+                        </template>
+                    </article>
+                </div>
+
+                <section v-if="view==='profile'" class="profile-page">
                     <article v-if="profileLoading" class="panel">
                         <div class="empty">Loading profile...</div>
                     </article>
@@ -671,7 +733,7 @@
                     </template>
                 </section>
 
-                <section v-else-if="view==='admin' && isAdmin" class="admin-layout">
+                <section v-if="view==='admin' && isAdmin" class="admin-layout">
                     <aside class="admin-sidebar">
                         <div class="admin-brand">Testing Platform</div>
                         <nav class="admin-nav">
@@ -1045,6 +1107,72 @@
                                     <button class="btn primary" type="button" @click="saveAdminCourse" :disabled="busy">
                                         {{ admin.courseFormMode === 'update' ? 'Update Course' : 'Create Course' }}
                                     </button>
+                                </div>
+                            </div>
+
+                            <div v-if="activeAdminCourse" class="admin-section-manager">
+                                <div class="admin-section-head">
+                                    <h3>Modules</h3>
+                                    <span class="small muted">{{ (activeAdminCourse.modules || []).length }}</span>
+                                </div>
+                                <div class="admin-section-form">
+                                    <label class="admin-section-field section-name-field">
+                                        <span>Title</span>
+                                        <input v-model.trim="admin.moduleForm.title" placeholder="Module title">
+                                    </label>
+                                    <label class="admin-section-field">
+                                        <span>Type</span>
+                                        <select v-model="admin.moduleForm.module_type">
+                                            <option value="markdown">Markdown</option>
+                                            <option value="document">Docs/PDF</option>
+                                            <option value="presentation">PPTX</option>
+                                            <option value="video">Video</option>
+                                        </select>
+                                    </label>
+                                    <label class="admin-section-field">
+                                        <span>Order</span>
+                                        <input v-model.number="admin.moduleForm.order_index" type="number" min="0">
+                                    </label>
+                                    <label class="admin-section-field">
+                                        <span>Status</span>
+                                        <select v-model="admin.moduleForm.is_active">
+                                            <option :value="true">active</option>
+                                            <option :value="false">inactive</option>
+                                        </select>
+                                    </label>
+                                    <label class="admin-section-field admin-section-global-field">
+                                        <span>File or video URL</span>
+                                        <input v-model.trim="admin.moduleForm.resource_url" placeholder="https://...">
+                                    </label>
+                                    <label class="admin-section-field admin-section-global-field">
+                                        <span>Markdown content</span>
+                                        <textarea v-model.trim="admin.moduleForm.content" rows="5" placeholder="# Heading&#10;Write module content here"></textarea>
+                                    </label>
+                                    <button class="btn primary small" type="button" @click="saveCourseModule" :disabled="busy">
+                                        {{ admin.moduleFormMode === 'update' ? 'Update Module' : 'Add Module' }}
+                                    </button>
+                                    <button class="btn secondary small" type="button" @click="resetModuleForm(activeAdminCourse.id)" :disabled="busy">
+                                        New Module
+                                    </button>
+                                </div>
+                                <div v-if="!(activeAdminCourse.modules || []).length" class="empty small">No modules yet.</div>
+                                <div v-else class="admin-catalog-list">
+                                    <div
+                                        v-for="module in activeAdminCourse.modules"
+                                        :key="`module-${module.id}`"
+                                        class="admin-catalog-item compact"
+                                    >
+                                        <strong>{{ module.order_index }}. {{ module.title }}</strong>
+                                        <span class="small muted">{{ module.module_type }} | {{ module.is_active ? 'active' : 'inactive' }}</span>
+                                        <div class="admin-catalog-actions">
+                                            <button class="admin-catalog-action-btn" type="button" @click="editCourseModule(module)" :disabled="busy" aria-label="Edit module" title="Edit module">
+                                                <i class="bi bi-pencil-square" aria-hidden="true"></i>
+                                            </button>
+                                            <button class="admin-catalog-action-btn danger" type="button" @click="deleteCourseModule(module)" :disabled="busy" aria-label="Delete module" title="Delete module">
+                                                <i class="bi bi-trash3" aria-hidden="true"></i>
+                                            </button>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
 
