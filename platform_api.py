@@ -159,6 +159,7 @@ class Attempt(Base):
     max_score: Mapped[int] = mapped_column(Integer, default=0)
     selected_question_ids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     option_orders_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    answers_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     passed: Mapped[bool] = mapped_column(Boolean, default=False)
 
     user: Mapped[User] = relationship(back_populates="attempts")
@@ -302,6 +303,40 @@ def parse_option_orders(raw_value: str | None) -> dict[int, list[int]]:
                 continue
         if order:
             result[question_id] = order
+    return result
+
+
+def parse_attempt_answers(raw_value: str | None) -> dict[int, int | list[int]]:
+    if not raw_value:
+        return {}
+    try:
+        value = json.loads(raw_value)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(value, dict):
+        return {}
+    result: dict[int, int | list[int]] = {}
+    for raw_question_id, raw_answer in value.items():
+        try:
+            question_id = int(raw_question_id)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(raw_answer, list):
+            selected = []
+            for item in raw_answer:
+                try:
+                    index = int(item)
+                except (TypeError, ValueError):
+                    continue
+                if index >= 0:
+                    selected.append(index)
+            result[question_id] = sorted(set(selected))
+            continue
+        try:
+            index = int(raw_answer)
+        except (TypeError, ValueError):
+            continue
+        result[question_id] = index
     return result
 
 
@@ -516,6 +551,16 @@ class ProfileStatsOut(BaseModel):
     success_rate_percent: float
 
 
+class AttemptAnswerAdminOut(BaseModel):
+    question_id: int
+    question_text: str
+    section_name: str | None = None
+    selected_answers: list[str]
+    correct_answers: list[str]
+    is_correct: bool
+    was_answered: bool
+
+
 class AttemptAdminOut(BaseModel):
     id: int
     status: str
@@ -526,6 +571,7 @@ class AttemptAdminOut(BaseModel):
     ended_at: dt.datetime | None
     topic_name: str
     level_name: str
+    answers: list[AttemptAnswerAdminOut] = Field(default_factory=list)
 
 
 class UserAdminStatsOut(BaseModel):
@@ -696,6 +742,65 @@ def can_manage_target_user(current_user: User, target_user: User) -> bool:
     return False
 
 
+def build_attempt_answer_rows(attempt: Attempt, config: TestConfig | None) -> list[AttemptAnswerAdminOut]:
+    if config is None or not attempt.answers_json:
+        return []
+    selected_ids = parse_selected_question_ids(attempt.selected_question_ids_json)
+    question_by_id = {question.id: question for question in config.questions}
+    if selected_ids:
+        questions = [question_by_id[question_id] for question_id in selected_ids if question_id in question_by_id]
+    else:
+        questions = list(config.questions)
+
+    answers = parse_attempt_answers(attempt.answers_json)
+    option_orders = parse_option_orders(attempt.option_orders_json)
+    rows: list[AttemptAnswerAdminOut] = []
+    for question in questions:
+        options, correct_indices = parse_question_payload(question.options_json, question.correct_index)
+        option_order = option_orders.get(question.id) or list(range(len(options)))
+        visible_options = [options[index] for index in option_order if 0 <= index < len(options)]
+        raw_selected = answers.get(question.id, -1)
+        if isinstance(raw_selected, list):
+            selected_display_indices = sorted({int(item) for item in raw_selected if int(item) >= 0})
+        elif isinstance(raw_selected, int) and raw_selected >= 0:
+            selected_display_indices = [raw_selected]
+        else:
+            selected_display_indices = []
+
+        selected_original_indices = sorted(
+            {
+                option_order[index]
+                for index in selected_display_indices
+                if 0 <= index < len(option_order)
+            }
+        )
+        correct_display_indices = sorted(
+            option_order.index(index)
+            for index in correct_indices
+            if index in option_order
+        )
+        rows.append(
+            AttemptAnswerAdminOut(
+                question_id=question.id,
+                question_text=question.question_text,
+                section_name=question.section.name if question.section is not None else None,
+                selected_answers=[
+                    visible_options[index]
+                    for index in selected_display_indices
+                    if 0 <= index < len(visible_options)
+                ],
+                correct_answers=[
+                    visible_options[index]
+                    for index in correct_display_indices
+                    if 0 <= index < len(visible_options)
+                ],
+                is_correct=selected_original_indices == correct_indices,
+                was_answered=bool(selected_display_indices),
+            )
+        )
+    return rows
+
+
 def build_user_admin_stats(db: Session, user: User) -> UserAdminStatsOut:
     attempts = db.scalars(select(Attempt).where(Attempt.user_id == user.id).order_by(Attempt.id.desc())).all()
     finalized_attempts = [item for item in attempts if item.status != AttemptStatus.IN_PROGRESS.value]
@@ -724,6 +829,7 @@ def build_user_admin_stats(db: Session, user: User) -> UserAdminStatsOut:
                 ended_at=item.ended_at,
                 topic_name=config.topic_name if config else "Unknown",
                 level_name=config.level_name if config else "Unknown",
+                answers=build_attempt_answer_rows(item, config),
             )
         )
 
@@ -985,6 +1091,8 @@ def on_startup():
             conn.execute(text("ALTER TABLE attempts ADD COLUMN selected_question_ids_json TEXT"))
         if "attempts" in columns_by_table and "option_orders_json" not in attempt_columns:
             conn.execute(text("ALTER TABLE attempts ADD COLUMN option_orders_json TEXT"))
+        if "attempts" in columns_by_table and "answers_json" not in attempt_columns:
+            conn.execute(text("ALTER TABLE attempts ADD COLUMN answers_json TEXT"))
         section_columns = columns_by_table.get("test_sections", set())
         if "test_sections" in columns_by_table and "order_index" not in section_columns:
             conn.execute(text("ALTER TABLE test_sections ADD COLUMN order_index INTEGER DEFAULT 0"))
@@ -1750,6 +1858,7 @@ def user_submit_test(
     attempt.passed = passed
     attempt.status = AttemptStatus.COMPLETED.value if passed else AttemptStatus.FAILED.value
     attempt.ended_at = dt.datetime.utcnow()
+    attempt.answers_json = json.dumps(payload.answers)
     db.commit()
 
     if passed:
@@ -1802,6 +1911,7 @@ def user_disqualify_test(
     attempt.passed = False
     attempt.status = AttemptStatus.DISQUALIFIED.value
     attempt.ended_at = dt.datetime.utcnow()
+    attempt.answers_json = json.dumps({})
     db.commit()
     db.refresh(current_user)
     return SubmitAttemptOut(

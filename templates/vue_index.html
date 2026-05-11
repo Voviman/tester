@@ -631,7 +631,7 @@
                             <button
                                 class="admin-nav-btn"
                                 :class="{ active: admin.activeTab === 'tests' }"
-                                @click="admin.activeTab = 'tests'"
+                                @click="setAdminTab('tests')"
                                 :disabled="busy"
                                 title="Test Manager"
                             >
@@ -641,19 +641,29 @@
                             <button
                                 class="admin-nav-btn"
                                 :class="{ active: admin.activeTab === 'users' }"
-                                @click="admin.activeTab = 'users'"
+                                @click="setAdminTab('users')"
                                 :disabled="busy"
                                 title="User Manager"
                             >
                                 <i class="bi bi-people icon" aria-hidden="true"></i>
                                 <span class="admin-nav-mini">Users</span>
                             </button>
+                            <button
+                                class="admin-nav-btn"
+                                :class="{ active: admin.activeTab === 'stats' }"
+                                @click="setAdminTab('stats')"
+                                :disabled="busy"
+                                title="User Statistics"
+                            >
+                                <i class="bi bi-bar-chart-line icon" aria-hidden="true"></i>
+                                <span class="admin-nav-mini">Stats</span>
+                            </button>
                         </nav>
                     </aside>
 
                     <aside class="panel admin-catalog">
                         <div class="section-head">
-                            <h3>{{ admin.activeTab === 'tests' ? 'Tests Available' : 'Users' }}</h3>
+                            <h3>{{ admin.activeTab === 'tests' ? 'Tests Available' : admin.activeTab === 'stats' ? 'User Statistics' : 'Users' }}</h3>
                             <span class="small muted" v-if="admin.activeTab === 'tests'">{{ filteredAdminTestConfigs.length }}</span>
                             <span class="small muted" v-else>{{ filteredAdminUsers.length }}</span>
                         </div>
@@ -674,6 +684,7 @@
                         >
                         <div class="admin-catalog-actions">
                             <button
+                                v-if="admin.activeTab !== 'stats'"
                                 class="admin-catalog-action-btn"
                                 type="button"
                                 @click="admin.activeTab === 'tests' ? openCreateTestMode() : openCreateUserMode()"
@@ -684,6 +695,7 @@
                                 <i class="bi bi-plus-circle icon" aria-hidden="true"></i>
                             </button>
                             <button
+                                v-if="admin.activeTab !== 'stats'"
                                 class="admin-catalog-action-btn"
                                 type="button"
                                 @click="admin.activeTab === 'tests' ? openUpdateTestMode() : openUpdateUserMode()"
@@ -694,6 +706,7 @@
                                 <i class="bi bi-pencil-square icon" aria-hidden="true"></i>
                             </button>
                             <button
+                                v-if="admin.activeTab !== 'stats'"
                                 class="admin-catalog-action-btn danger"
                                 type="button"
                                 @click="admin.activeTab === 'tests' ? requestDeleteAdminTest() : requestDeleteAdminUser()"
@@ -702,6 +715,17 @@
                                 title="Remove"
                             >
                                 <i class="bi bi-trash3 icon" aria-hidden="true"></i>
+                            </button>
+                            <button
+                                v-if="admin.activeTab === 'stats'"
+                                class="admin-catalog-action-btn"
+                                type="button"
+                                @click="selectUser({ force: true })"
+                                :disabled="busy || !activeAdminUser"
+                                aria-label="Refresh statistics"
+                                title="Refresh statistics"
+                            >
+                                <i class="bi bi-arrow-clockwise icon" aria-hidden="true"></i>
                             </button>
                         </div>
 
@@ -926,7 +950,7 @@
                             </article>
                         </template>
 
-                        <article v-else class="panel">
+                        <article v-else-if="admin.activeTab === 'users'" class="panel">
                             <h2>User Manager</h2>
                             <div v-if="activeAdminUser" class="small muted">
                                 Selected: #{{ activeAdminUser.id }} {{ activeAdminUser.username }} ({{ activeAdminUser.role }})
@@ -934,6 +958,84 @@
                             <p class="muted small">
                                 Use the create, edit, and delete action buttons in the left panel to manage users.
                             </p>
+                        </article>
+
+                        <article v-else class="panel admin-user-stats-panel">
+                            <div class="section-head">
+                                <div>
+                                    <h2>User Detailed Statistics</h2>
+                                    <div v-if="admin.selectedUserStats" class="small muted">
+                                        #{{ admin.selectedUserStats.user.id }} {{ admin.selectedUserStats.user.username }} ({{ admin.selectedUserStats.user.role }})
+                                    </div>
+                                </div>
+                            </div>
+                            <div v-if="!activeAdminUser" class="empty small">Select a user to view statistics.</div>
+                            <div v-else-if="!admin.selectedUserStats" class="empty small">Loading user statistics...</div>
+                            <template v-else>
+                                <div class="admin-stat-summary">
+                                    <div><span>Credits</span><strong>{{ admin.selectedUserStats.user.credits }}</strong></div>
+                                    <div><span>Tests done</span><strong>{{ admin.selectedUserStats.tests_done }}</strong></div>
+                                    <div><span>Passed</span><strong>{{ admin.selectedUserStats.passed_tests }}</strong></div>
+                                    <div><span>Failed</span><strong>{{ admin.selectedUserStats.failed_tests }}</strong></div>
+                                    <div><span>Success</span><strong>{{ Number(admin.selectedUserStats.success_rate_percent).toFixed(2) }}%</strong></div>
+                                </div>
+
+                                <div v-if="!admin.selectedUserStats.attempts.length" class="empty small">
+                                    This user has not participated in any tests yet.
+                                </div>
+                                <div v-else class="admin-attempt-list">
+                                    <section
+                                        v-for="attempt in admin.selectedUserStats.attempts"
+                                        :key="attempt.id"
+                                        class="admin-attempt-card"
+                                    >
+                                        <div class="admin-attempt-head">
+                                            <div>
+                                                <h3>{{ attempt.topic_name }} - {{ attempt.level_name }}</h3>
+                                                <p class="small muted">
+                                                    Attempt #{{ attempt.id }} | {{ formatDate(attempt.ended_at || attempt.started_at) }}
+                                                </p>
+                                            </div>
+                                            <span :class="['admin-state-badge', attempt.passed ? 'active' : 'inactive']">
+                                                {{ attempt.status }}
+                                            </span>
+                                        </div>
+                                        <div class="small muted">
+                                            Score {{ attempt.score }}/{{ attempt.total_questions }} | {{ attemptPercent(attempt) }}%
+                                        </div>
+                                        <div v-if="!attempt.answers || !attempt.answers.length" class="empty small">
+                                            Answer details were not recorded for this attempt.
+                                        </div>
+                                        <div v-else class="admin-answer-table-wrap">
+                                            <table class="admin-question-table admin-answer-table">
+                                                <thead>
+                                                    <tr>
+                                                        <th>Question</th>
+                                                        <th>User choice</th>
+                                                        <th>Correct answer</th>
+                                                        <th>Result</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    <tr v-for="answer in attempt.answers" :key="`${attempt.id}-${answer.question_id}`">
+                                                        <td>
+                                                            <div v-if="answer.section_name" class="small muted">{{ answer.section_name }}</div>
+                                                            {{ answer.question_text }}
+                                                        </td>
+                                                        <td>{{ answerListText(answer.selected_answers) }}</td>
+                                                        <td>{{ answerListText(answer.correct_answers) }}</td>
+                                                        <td>
+                                                            <span :class="['admin-answer-badge', answer.is_correct ? 'correct' : 'wrong']">
+                                                                {{ answer.is_correct ? 'Correct' : answer.was_answered ? 'Wrong' : 'Missing' }}
+                                                            </span>
+                                                        </td>
+                                                    </tr>
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </section>
+                                </div>
+                            </template>
                         </article>
                     </div>
 

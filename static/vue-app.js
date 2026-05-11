@@ -1132,8 +1132,19 @@ createApp({
             };
         },
         async selectAdminUser(userId) {
-            this.admin.selectedUserId = Number(userId) || 0;
-            if (this.admin.userFormMode === "update") {
+            const nextUserId = Number(userId) || 0;
+            if (Number(this.admin.selectedUserId || 0) !== nextUserId) {
+                this.admin.selectedUserStats = null;
+                this.admin.selectedUserStatsFetchedAt = 0;
+            }
+            this.admin.selectedUserId = nextUserId;
+            if (this.admin.activeTab === "stats" || this.admin.userFormMode === "update") {
+                await this.selectUser();
+            }
+        },
+        async setAdminTab(tab) {
+            this.admin.activeTab = tab;
+            if (tab === "stats" && this.admin.selectedUserId) {
                 await this.selectUser();
             }
         },
@@ -1165,6 +1176,15 @@ createApp({
             if (!indices.length) return "-";
             const labels = indices.map((index) => options[index] || `Option ${this.optionLetter(index)}`);
             return labels.join(", ");
+        },
+        answerListText(items) {
+            if (!Array.isArray(items) || !items.length) return "No answer";
+            return items.join(", ");
+        },
+        attemptPercent(attempt) {
+            const total = Number(attempt?.total_questions || 0);
+            if (total <= 0) return "0.00";
+            return ((Number(attempt?.score || 0) / total) * 100).toFixed(2);
         },
         sectionName(sectionId) {
             const id = Number(sectionId || 0);
@@ -2043,7 +2063,7 @@ createApp({
                     ...item,
                     duration_minutes: Math.max(1, Math.floor(Number(item.duration_seconds || 0) / 60)),
                 }));
-                if (!["tests", "users"].includes(this.admin.activeTab)) {
+                if (!["tests", "users", "stats"].includes(this.admin.activeTab)) {
                     this.admin.activeTab = "tests";
                 }
                 const availableConfigIds = new Set(this.admin.test_configs.map((item) => item.id));
