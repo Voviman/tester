@@ -171,6 +171,9 @@ createApp({
     },
     computed: {
         isAdmin() {
+            return this.me && this.isAdminRole(this.me.role);
+        },
+        canManageUsers() {
             return this.me && (this.me.role === "admin" || this.me.role === "super_admin");
         },
         filteredActiveUsers() {
@@ -184,7 +187,8 @@ createApp({
                 const r = String(role ?? "").toLowerCase();
                 if (r === "super_admin") return 0;
                 if (r === "admin") return 1;
-                return 2;
+                if (r === "moderator") return 2;
+                return 3;
             };
             list.sort((a, b) => {
                 const ra = adminRank(a.role);
@@ -619,7 +623,24 @@ createApp({
             return "/dashboard";
         },
         isAdminRole(role) {
-            return role === "admin" || role === "super_admin";
+            return role === "moderator" || role === "admin" || role === "super_admin";
+        },
+        roleBadgeClass(role) {
+            const normalized = this.normalizeRole(role);
+            return ["admin-role-badge", `role-${normalized}`];
+        },
+        roleBadgeTitle(role) {
+            const normalized = this.normalizeRole(role);
+            if (normalized === "super_admin") return "Super admin";
+            if (normalized === "admin") return "Admin";
+            if (normalized === "moderator") return "Moderator";
+            return "Verified";
+        },
+        approvalLabel(item) {
+            const status = String(item?.approval_status || "approved").toLowerCase();
+            if (status === "pending") return "pending approval";
+            if (status === "rejected") return "rejected";
+            return "approved";
         },
         async openUserProfile(userId) {
             const targetUserId = Number(userId);
@@ -651,6 +672,13 @@ createApp({
             const users = this.dashboard?.social_dashboard?.active_users || [];
             const match = users.find((u) => Number(u.id) === Number(item.user_id));
             return match ? this.isAdminRole(match.role) : false;
+        },
+        recentResultRole(item) {
+            if (!item) return "user";
+            if (item.user_role) return this.normalizeRole(item.user_role);
+            const users = this.dashboard?.social_dashboard?.active_users || [];
+            const match = users.find((u) => Number(u.id) === Number(item.user_id));
+            return this.normalizeRole(match?.role);
         },
         normalizeRole(role) {
             if (typeof role === "string") return role;
@@ -1925,6 +1953,23 @@ createApp({
                 this.busy = false;
             }
         },
+        async setAdminTestApproval(approved) {
+            const target = this.activeAdminTestConfig;
+            if (!target || !this.canManageUsers) return;
+            this.clearNotices();
+            this.busy = true;
+            try {
+                await this.request("PATCH", `/webapi/admin/test-configs/${target.id}/approval`, {
+                    approved: Boolean(approved),
+                });
+                this.success = approved ? "Test approved." : "Test rejected.";
+                await this.loadAdmin();
+            } catch (error) {
+                this.error = error.message;
+            } finally {
+                this.busy = false;
+            }
+        },
         async saveAdminCourse() {
             this.clearNotices();
             const form = this.admin.courseForm;
@@ -1965,6 +2010,23 @@ createApp({
                 await this.request("DELETE", `/webapi/admin/courses/${target.id}`);
                 this.success = "Course deleted.";
                 this.resetCourseForm();
+                await this.loadAdmin();
+            } catch (error) {
+                this.error = error.message;
+            } finally {
+                this.busy = false;
+            }
+        },
+        async setAdminCourseApproval(approved) {
+            const target = this.activeAdminCourse;
+            if (!target || !this.canManageUsers) return;
+            this.clearNotices();
+            this.busy = true;
+            try {
+                await this.request("PATCH", `/webapi/admin/courses/${target.id}/approval`, {
+                    approved: Boolean(approved),
+                });
+                this.success = approved ? "Course approved." : "Course rejected.";
                 await this.loadAdmin();
             } catch (error) {
                 this.error = error.message;
@@ -2570,6 +2632,9 @@ createApp({
                     course_id: item.course_id == null ? null : Number(item.course_id),
                     duration_minutes: Math.max(1, Math.floor(Number(item.duration_seconds || 0) / 60)),
                 }));
+                if (!this.canManageUsers && ["users", "stats"].includes(this.admin.activeTab)) {
+                    this.admin.activeTab = "tests";
+                }
                 if (!["tests", "users", "stats", "courses"].includes(this.admin.activeTab)) {
                     this.admin.activeTab = "tests";
                 }
@@ -2630,7 +2695,12 @@ createApp({
             const username = String(form.username || "").trim();
             const email = String(form.email || "").trim();
             const password = String(form.password || "");
-            const role = this.me?.role === "super_admin" && form.role === "admin" ? "admin" : "user";
+            let role = "user";
+            if (form.role === "moderator" && (this.me?.role === "admin" || this.me?.role === "super_admin")) {
+                role = "moderator";
+            } else if (form.role === "admin" && this.me?.role === "super_admin") {
+                role = "admin";
+            }
             const creditsInput = form.credits === "" || form.credits === null || typeof form.credits === "undefined" ? 0 : form.credits;
             const credits = Number(creditsInput);
 

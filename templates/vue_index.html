@@ -141,6 +141,7 @@
                                         <div>
                                             <h3>{{ course.title }}</h3>
                                             <p class="muted small">{{ course.summary || 'Course material' }}</p>
+                                            <p class="muted small">Author {{ course.author_username || 'Unknown' }}</p>
                                         </div>
                                         <span :class="['admin-state-badge', course.completed ? 'active' : 'inactive']">
                                             {{ course.completed ? 'completed' : 'required' }}
@@ -194,6 +195,7 @@
                                 <div class="test-top test-top-geo" :style="testCardGeometricBackground(test)">
                                     <div class="test-top-main">
                                         <h3 class="test-title">{{ test.topic_name }} - {{ test.level_name }}</h3>
+                                        <div class="muted small test-author">Author {{ test.author_username || 'Unknown' }}</div>
                                         <div class="test-meta">
                                             <span class="meta-chip meta-time">Time {{ Math.floor(test.duration_seconds / 60) }} min</span>
                                             <span class="meta-chip meta-pass">Pass {{ Number(test.passing_percent).toFixed(2) }}%</span>
@@ -331,9 +333,9 @@
                                 <h2 class="snapshot-heading">{{ snapshotSidebarUsername }}</h2>
                                 <span
                                     v-if="snapshotSidebarIsAdmin"
-                                    class="admin-role-badge"
-                                    aria-label="Administrator"
-                                    title="Admin"
+                                    :class="roleBadgeClass(me?.role || dashboard.profile.user?.role)"
+                                    :aria-label="roleBadgeTitle(me?.role || dashboard.profile.user?.role)"
+                                    :title="roleBadgeTitle(me?.role || dashboard.profile.user?.role)"
                                 >
                                     <i class="bi bi-patch-check-fill icon" aria-hidden="true"></i>
                                 </span>
@@ -370,9 +372,9 @@
                                                 <strong>{{ item.username }}</strong>
                                                 <span
                                                     v-if="isRecentResultAdmin(item)"
-                                                    class="admin-role-badge"
+                                                    :class="roleBadgeClass(recentResultRole(item))"
                                                     aria-hidden="true"
-                                                    title="Admin"
+                                                    :title="roleBadgeTitle(recentResultRole(item))"
                                                 >
                                                     <i class="bi bi-patch-check-fill icon"></i>
                                                 </span>
@@ -421,9 +423,9 @@
                                             <strong>{{ user.username }}</strong>
                                             <span
                                                 v-if="isAdminRole(user.role)"
-                                                class="admin-role-badge"
+                                                :class="roleBadgeClass(user.role)"
                                                 aria-hidden="true"
-                                                title="Admin"
+                                                :title="roleBadgeTitle(user.role)"
                                             >
                                                 <i class="bi bi-patch-check-fill icon"></i>
                                             </span>
@@ -546,9 +548,9 @@
                                     </h2>
                                     <span
                                         v-if="profileShowsAdminBadge"
-                                        class="admin-role-badge profile-role-badge"
-                                        title="Admin"
-                                        aria-label="Administrator"
+                                        :class="roleBadgeClass(profileIsPublic ? profilePublicRole : (profile.profile.user.role || me?.role)).concat('profile-role-badge')"
+                                        :title="roleBadgeTitle(profileIsPublic ? profilePublicRole : (profile.profile.user.role || me?.role))"
+                                        :aria-label="roleBadgeTitle(profileIsPublic ? profilePublicRole : (profile.profile.user.role || me?.role))"
                                     >
                                         <i class="bi bi-patch-check-fill icon" aria-hidden="true"></i>
                                     </span>
@@ -751,6 +753,7 @@
                                 <span class="admin-nav-mini">Tests</span>
                             </button>
                             <button
+                                v-if="canManageUsers"
                                 class="admin-nav-btn"
                                 :class="{ active: admin.activeTab === 'users' }"
                                 @click="setAdminTab('users')"
@@ -771,6 +774,7 @@
                                 <span class="admin-nav-mini">Courses</span>
                             </button>
                             <button
+                                v-if="canManageUsers"
                                 class="admin-nav-btn"
                                 :class="{ active: admin.activeTab === 'stats' }"
                                 @click="setAdminTab('stats')"
@@ -866,8 +870,12 @@
                                 <span class="small muted">
                                     Duration {{ cfg.duration_minutes }} min | Pass {{ Number(cfg.passing_percent).toFixed(2) }}% | Questions {{ cfg.question_count }}
                                 </span>
+                                <span class="small muted">Author {{ cfg.author_username || 'Unknown' }}</span>
                                 <span :class="['admin-state-badge', cfg.is_active ? 'active' : 'inactive']">
                                     {{ cfg.is_active ? 'active' : 'inactive' }}
+                                </span>
+                                <span :class="['admin-state-badge', cfg.approval_status || 'approved']">
+                                    {{ approvalLabel(cfg) }}
                                 </span>
                             </button>
                         </div>
@@ -883,8 +891,12 @@
                             >
                                 <strong>{{ course.title }}</strong>
                                 <span class="small muted">{{ (course.linked_tests || []).length }} linked tests</span>
+                                <span class="small muted">Author {{ course.author_username || 'Unknown' }}</span>
                                 <span :class="['admin-state-badge', course.is_active ? 'active' : 'inactive']">
                                     {{ course.is_active ? 'active' : 'inactive' }}
+                                </span>
+                                <span :class="['admin-state-badge', course.approval_status || 'approved']">
+                                    {{ approvalLabel(course) }}
                                 </span>
                             </button>
                         </div>
@@ -918,8 +930,30 @@
                                             Worth {{ activeAdminTestSections.length ? activeAdminMaxScore : activeAdminTestConfig.question_count }} |
                                             Status {{ activeAdminTestConfig.is_active ? 'active' : 'inactive' }}
                                         </div>
+                                        <div class="small muted">
+                                            Author {{ activeAdminTestConfig.author_username || 'Unknown' }} |
+                                            Approval {{ approvalLabel(activeAdminTestConfig) }}
+                                        </div>
                                     </div>
                                     <div class="admin-test-card-actions">
+                                        <button
+                                            v-if="canManageUsers && activeAdminTestConfig.approval_status !== 'approved'"
+                                            class="btn primary small"
+                                            type="button"
+                                            @click="setAdminTestApproval(true)"
+                                            :disabled="busy"
+                                        >
+                                            Approve
+                                        </button>
+                                        <button
+                                            v-if="canManageUsers && activeAdminTestConfig.approval_status !== 'rejected'"
+                                            class="btn secondary small"
+                                            type="button"
+                                            @click="setAdminTestApproval(false)"
+                                            :disabled="busy"
+                                        >
+                                            Reject
+                                        </button>
                                         <button class="btn primary small" @click="openAddQuestionModal(activeAdminTestConfig)" :disabled="busy">Add Question</button>
                                     </div>
                                 </div>
@@ -1094,7 +1128,33 @@
                             <div class="section-head">
                                 <div>
                                     <h2>Course Manager</h2>
-                                    <div class="small muted">Create course content, link tests, and control whether the course is active.</div>
+                                    <div class="small muted">
+                                        Create course content, link tests, and control whether the course is active.
+                                        <template v-if="activeAdminCourse">
+                                            Author {{ activeAdminCourse.author_username || 'Unknown' }} |
+                                            Approval {{ approvalLabel(activeAdminCourse) }}
+                                        </template>
+                                    </div>
+                                </div>
+                                <div v-if="canManageUsers && activeAdminCourse" class="admin-test-card-actions">
+                                    <button
+                                        v-if="activeAdminCourse.approval_status !== 'approved'"
+                                        class="btn primary small"
+                                        type="button"
+                                        @click="setAdminCourseApproval(true)"
+                                        :disabled="busy"
+                                    >
+                                        Approve
+                                    </button>
+                                    <button
+                                        v-if="activeAdminCourse.approval_status !== 'rejected'"
+                                        class="btn secondary small"
+                                        type="button"
+                                        @click="setAdminCourseApproval(false)"
+                                        :disabled="busy"
+                                    >
+                                        Reject
+                                    </button>
                                 </div>
                             </div>
                             <div class="form-grid admin-test-form">
@@ -1199,7 +1259,7 @@
                                         <select v-model.number="admin.courseForm.linked_test_id">
                                             <option :value="0">Select test</option>
                                             <option v-for="cfg in admin.test_configs" :key="`link-${cfg.id}`" :value="cfg.id">
-                                                {{ cfg.topic_name }} - {{ cfg.level_name }}
+                                                {{ cfg.topic_name }} - {{ cfg.level_name }} ({{ cfg.author_username || 'Unknown' }})
                                             </option>
                                         </select>
                                     </label>
@@ -1211,13 +1271,13 @@
                                 <div v-else class="admin-catalog-list">
                                     <div v-for="test in activeAdminCourse.linked_tests" :key="`linked-admin-${test.id}`" class="admin-catalog-item compact">
                                         <strong>{{ test.topic_name }} - {{ test.level_name }}</strong>
-                                        <span class="small muted">{{ test.question_count }} questions</span>
+                                        <span class="small muted">{{ test.question_count }} questions | Author {{ test.author_username || 'Unknown' }}</span>
                                         <button class="btn secondary small" type="button" @click="unlinkTestFromCourse(test)" :disabled="busy">Unlink</button>
                                     </div>
                                 </div>
                             </div>
 
-                            <div class="admin-section-manager">
+                            <div v-if="canManageUsers" class="admin-section-manager">
                                 <div class="admin-section-head">
                                     <h3>Closed Test Access</h3>
                                 </div>
@@ -1471,6 +1531,7 @@
                                 <input v-model="admin.createUser.password" type="password" placeholder="Password">
                                 <select v-model="admin.createUser.role">
                                     <option value="user">user</option>
+                                    <option value="moderator">moderator</option>
                                     <option v-if="me.role === 'super_admin'" value="admin">admin</option>
                                 </select>
                                 <input v-model.number="admin.createUser.credits" type="number" min="0" placeholder="Starting credits">
@@ -1490,6 +1551,7 @@
                                     <input v-model.trim="admin.editUser.email" type="email" placeholder="Email">
                                     <select v-model="admin.editUser.role" :disabled="admin.selectedUserStats.user.role === 'super_admin'">
                                         <option value="user">user</option>
+                                        <option value="moderator">moderator</option>
                                         <option v-if="me.role === 'super_admin'" value="admin">admin</option>
                                     </select>
                                     <input v-model.number="admin.editUser.credits" type="number" min="0" placeholder="Total credits">

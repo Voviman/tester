@@ -2,7 +2,7 @@
 """
 Create sample test templates (configs + questions) on the platform API.
 
-Requires an admin or super_admin account.
+Requires a moderator, admin, or super_admin account.
 
 Examples (PowerShell):
 
@@ -201,8 +201,8 @@ def main() -> int:
             print(f"Could not read /auth/me: {error}", file=sys.stderr)
             return 1
         role = me.get("role", "")
-        if role not in {"admin", "super_admin"}:
-            print(f"User {me.get('username')} has role {role!r}; admin or super_admin required.", file=sys.stderr)
+        if role not in {"moderator", "admin", "super_admin"}:
+            print(f"User {me.get('username')} has role {role!r}; moderator, admin, or super_admin required.", file=sys.stderr)
             return 1
     else:
         token = ""

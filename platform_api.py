@@ -78,6 +78,7 @@ class Base(DeclarativeBase):
 class UserRole(str, Enum):
     SUPER_ADMIN = "super_admin"
     ADMIN = "admin"
+    MODERATOR = "moderator"
     USER = "user"
 
 
@@ -114,11 +115,17 @@ class TestConfig(Base):
     passing_percent: Mapped[float] = mapped_column(Float, default=60.0)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     course_id: Mapped[int | None] = mapped_column(ForeignKey("courses.id"), nullable=True, index=True)
+    created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    approval_status: Mapped[str] = mapped_column(String(20), default="approved", index=True)
+    approved_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    approved_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
 
     questions: Mapped[list["Question"]] = relationship(back_populates="test_config", cascade="all,delete")
     sections: Mapped[list["TestSection"]] = relationship(back_populates="test_config", cascade="all,delete")
     attempts: Mapped[list["Attempt"]] = relationship(back_populates="test_config")
     course: Mapped["Course | None"] = relationship(back_populates="tests")
+    author: Mapped["User | None"] = relationship(foreign_keys=[created_by_id])
+    approver: Mapped["User | None"] = relationship(foreign_keys=[approved_by_id])
 
 
 class Course(Base):
@@ -130,9 +137,15 @@ class Course(Base):
     content: Mapped[str] = mapped_column(Text, default="")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+    created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    approval_status: Mapped[str] = mapped_column(String(20), default="approved", index=True)
+    approved_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    approved_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
 
     tests: Mapped[list[TestConfig]] = relationship(back_populates="course")
     modules: Mapped[list["CourseModule"]] = relationship(back_populates="course", cascade="all,delete")
+    author: Mapped["User | None"] = relationship(foreign_keys=[created_by_id])
+    approver: Mapped["User | None"] = relationship(foreign_keys=[approved_by_id])
 
 
 class CourseModule(Base):
@@ -517,6 +530,12 @@ class TestConfigOut(BaseModel):
     access_override: bool = False
     can_start: bool = True
     locked_reason: str | None = None
+    author_id: int | None = None
+    author_username: str | None = None
+    approval_status: str = "approved"
+    approved_by_id: int | None = None
+    approved_by_username: str | None = None
+    approved_at: dt.datetime | None = None
 
 
 class CourseCreateIn(BaseModel):
@@ -570,6 +589,12 @@ class CourseOut(BaseModel):
     content: str
     is_active: bool
     completed: bool = False
+    author_id: int | None = None
+    author_username: str | None = None
+    approval_status: str = "approved"
+    approved_by_id: int | None = None
+    approved_by_username: str | None = None
+    approved_at: dt.datetime | None = None
     modules: list[CourseModuleOut] = Field(default_factory=list)
     linked_tests: list[TestConfigOut] = Field(default_factory=list)
 
@@ -578,6 +603,10 @@ class TestAccessOverrideIn(BaseModel):
     user_id: int
     test_config_id: int
     grant: bool = True
+
+
+class ContentApprovalIn(BaseModel):
+    approved: bool = True
 
 
 class CourseModuleFileOut(BaseModel):
@@ -871,6 +900,12 @@ def serialize_test_config(
         access_override=access_override,
         can_start=can_start,
         locked_reason=None if can_start else "Finish the linked course before starting this test.",
+        author_id=config.created_by_id,
+        author_username=config.author.username if config.author is not None else None,
+        approval_status=config.approval_status or "approved",
+        approved_by_id=config.approved_by_id,
+        approved_by_username=config.approver.username if config.approver is not None else None,
+        approved_at=config.approved_at,
     )
 
 
@@ -905,18 +940,25 @@ def serialize_course(
     completed_course_ids: set[int] | None = None,
     override_test_ids: set[int] | None = None,
     include_tests: bool = True,
+    managed_by_user_id: int | None = None,
+    public_only: bool = False,
 ) -> CourseOut:
     completed_course_ids = completed_course_ids or set()
     override_test_ids = override_test_ids or set()
     tests = []
     if include_tests:
+        course_tests = course.tests
+        if managed_by_user_id is not None:
+            course_tests = [test for test in course_tests if test.created_by_id == managed_by_user_id]
+        if public_only:
+            course_tests = [test for test in course_tests if is_content_published(test)]
         tests = [
             serialize_test_config(
                 test,
                 completed_course_ids=completed_course_ids,
                 override_test_ids=override_test_ids,
             )
-            for test in sorted(course.tests, key=lambda item: (item.topic_name.lower(), item.level_name.lower(), item.id))
+            for test in sorted(course_tests, key=lambda item: (item.topic_name.lower(), item.level_name.lower(), item.id))
         ]
     active_modules = sorted(
         [module for module in course.modules if module.is_active],
@@ -934,6 +976,12 @@ def serialize_course(
         content=course.content or "",
         is_active=course.is_active,
         completed=course.id in completed_course_ids,
+        author_id=course.created_by_id,
+        author_username=course.author.username if course.author is not None else None,
+        approval_status=course.approval_status or "approved",
+        approved_by_id=course.approved_by_id,
+        approved_by_username=course.approver.username if course.approver is not None else None,
+        approved_at=course.approved_at,
         modules=modules,
         linked_tests=tests,
     )
@@ -958,8 +1006,49 @@ def can_manage_target_user(current_user: User, target_user: User) -> bool:
     if current_user.role == UserRole.SUPER_ADMIN.value:
         return True
     if current_user.role == UserRole.ADMIN.value:
-        return target_user.role == UserRole.USER.value
+        return target_user.role in {UserRole.USER.value, UserRole.MODERATOR.value}
     return False
+
+
+def can_manage_content(current_user: User, item: TestConfig | Course) -> bool:
+    if current_user.role in {UserRole.SUPER_ADMIN.value, UserRole.ADMIN.value}:
+        return True
+    if current_user.role == UserRole.MODERATOR.value:
+        return item.created_by_id == current_user.id
+    return False
+
+
+def is_content_published(item: TestConfig | Course) -> bool:
+    return bool(item.is_active) and (item.approval_status or "approved") == "approved"
+
+
+def approval_fields_for_create(current_user: User) -> dict[str, object]:
+    if current_user.role == UserRole.MODERATOR.value:
+        return {"approval_status": "pending", "approved_by_id": None, "approved_at": None}
+    return {
+        "approval_status": "approved",
+        "approved_by_id": current_user.id,
+        "approved_at": dt.datetime.utcnow(),
+    }
+
+
+def mark_pending_after_moderator_edit(current_user: User, item: TestConfig | Course) -> None:
+    if current_user.role == UserRole.MODERATOR.value:
+        item.approval_status = "pending"
+        item.approved_by_id = None
+        item.approved_at = None
+
+
+def require_content_access(current_user: User, item: TestConfig | Course, label: str) -> None:
+    if not can_manage_content(current_user, item):
+        raise HTTPException(status_code=403, detail=f"You can only manage {label} that you created.")
+
+
+def visible_content_query(current_user: User, model):
+    query = select(model)
+    if current_user.role == UserRole.MODERATOR.value:
+        query = query.where(model.created_by_id == current_user.id)
+    return query
 
 
 def build_attempt_answer_rows(attempt: Attempt, config: TestConfig | None) -> list[AttemptAnswerAdminOut]:
@@ -1084,8 +1173,12 @@ def build_social_dashboard(db: Session, current_user: User) -> SocialDashboardOu
             selectinload(Course.tests).selectinload(TestConfig.questions),
             selectinload(Course.tests).selectinload(TestConfig.sections).selectinload(TestSection.questions),
             selectinload(Course.tests).selectinload(TestConfig.course),
+            selectinload(Course.tests).selectinload(TestConfig.author),
+            selectinload(Course.tests).selectinload(TestConfig.approver),
+            selectinload(Course.author),
+            selectinload(Course.approver),
         )
-        .where(Course.is_active.is_(True))
+        .where(Course.is_active.is_(True), Course.approval_status == "approved")
         .order_by(Course.title.asc(), Course.id.asc())
     ).all()
     tests = db.scalars(
@@ -1094,16 +1187,24 @@ def build_social_dashboard(db: Session, current_user: User) -> SocialDashboardOu
             selectinload(TestConfig.questions),
             selectinload(TestConfig.sections).selectinload(TestSection.questions),
             selectinload(TestConfig.course),
+            selectinload(TestConfig.author),
+            selectinload(TestConfig.approver),
         )
-        .where(TestConfig.is_active.is_(True))
+        .where(TestConfig.is_active.is_(True), TestConfig.approval_status == "approved")
         .order_by(TestConfig.topic_name.asc(), TestConfig.level_name.asc())
     ).all()
     tests_out = [
         serialize_test_config(item, completed_course_ids=completed_course_ids, override_test_ids=override_test_ids)
         for item in tests
+        if item.course_id is None or (item.course is not None and is_content_published(item.course))
     ]
     courses_out = [
-        serialize_course(item, completed_course_ids=completed_course_ids, override_test_ids=override_test_ids)
+        serialize_course(
+            item,
+            completed_course_ids=completed_course_ids,
+            override_test_ids=override_test_ids,
+            public_only=True,
+        )
         for item in courses
     ]
 
@@ -1341,6 +1442,23 @@ def on_startup():
         test_config_columns = columns_by_table.get("test_configs", set())
         if "test_configs" in columns_by_table and "course_id" not in test_config_columns:
             conn.execute(text("ALTER TABLE test_configs ADD COLUMN course_id INTEGER"))
+        if "test_configs" in columns_by_table and "created_by_id" not in test_config_columns:
+            conn.execute(text("ALTER TABLE test_configs ADD COLUMN created_by_id INTEGER"))
+        if "test_configs" in columns_by_table and "approval_status" not in test_config_columns:
+            conn.execute(text("ALTER TABLE test_configs ADD COLUMN approval_status VARCHAR(20) DEFAULT 'approved'"))
+        if "test_configs" in columns_by_table and "approved_by_id" not in test_config_columns:
+            conn.execute(text("ALTER TABLE test_configs ADD COLUMN approved_by_id INTEGER"))
+        if "test_configs" in columns_by_table and "approved_at" not in test_config_columns:
+            conn.execute(text("ALTER TABLE test_configs ADD COLUMN approved_at DATETIME"))
+        course_columns = columns_by_table.get("courses", set())
+        if "courses" in columns_by_table and "created_by_id" not in course_columns:
+            conn.execute(text("ALTER TABLE courses ADD COLUMN created_by_id INTEGER"))
+        if "courses" in columns_by_table and "approval_status" not in course_columns:
+            conn.execute(text("ALTER TABLE courses ADD COLUMN approval_status VARCHAR(20) DEFAULT 'approved'"))
+        if "courses" in columns_by_table and "approved_by_id" not in course_columns:
+            conn.execute(text("ALTER TABLE courses ADD COLUMN approved_by_id INTEGER"))
+        if "courses" in columns_by_table and "approved_at" not in course_columns:
+            conn.execute(text("ALTER TABLE courses ADD COLUMN approved_at DATETIME"))
         section_columns = columns_by_table.get("test_sections", set())
         if "test_sections" in columns_by_table and "order_index" not in section_columns:
             conn.execute(text("ALTER TABLE test_sections ADD COLUMN order_index INTEGER DEFAULT 0"))
@@ -1412,39 +1530,59 @@ def admin_list_users(
 
 @app.get("/admin/overview", response_model=AdminOverviewOut)
 def admin_overview(
-    _: Annotated[User, Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))],
+    current_user: Annotated[User, Depends(require_roles(UserRole.MODERATOR, UserRole.ADMIN, UserRole.SUPER_ADMIN))],
     db: Annotated[Session, Depends(get_db)],
 ):
-    users = db.scalars(select(User).order_by(User.id.asc())).all()
+    users = []
+    if current_user.role in {UserRole.ADMIN.value, UserRole.SUPER_ADMIN.value}:
+        users = db.scalars(select(User).order_by(User.id.asc())).all()
     configs = db.scalars(
-        select(TestConfig)
+        visible_content_query(current_user, TestConfig)
         .options(
             selectinload(TestConfig.questions),
             selectinload(TestConfig.sections).selectinload(TestSection.questions),
             selectinload(TestConfig.course),
+            selectinload(TestConfig.author),
+            selectinload(TestConfig.approver),
         )
         .order_by(TestConfig.topic_name, TestConfig.level_name)
     ).all()
     courses = db.scalars(
-        select(Course)
+        visible_content_query(current_user, Course)
         .options(
+            selectinload(Course.author),
+            selectinload(Course.approver),
             selectinload(Course.modules),
             selectinload(Course.tests).selectinload(TestConfig.questions),
             selectinload(Course.tests).selectinload(TestConfig.sections).selectinload(TestSection.questions),
             selectinload(Course.tests).selectinload(TestConfig.course),
+            selectinload(Course.tests).selectinload(TestConfig.author),
+            selectinload(Course.tests).selectinload(TestConfig.approver),
         )
         .order_by(Course.title.asc(), Course.id.asc())
     ).all()
-    sections = db.scalars(
+    sections_query = (
         select(TestSection)
+        .join(TestConfig)
         .options(selectinload(TestSection.questions))
         .order_by(TestSection.test_config_id, TestSection.order_index, TestSection.id)
-    ).all()
-    questions = db.scalars(select(Question).order_by(Question.id.desc())).all()
+    )
+    questions_query = select(Question).join(TestConfig).order_by(Question.id.desc())
+    if current_user.role == UserRole.MODERATOR.value:
+        sections_query = sections_query.where(TestConfig.created_by_id == current_user.id)
+        questions_query = questions_query.where(TestConfig.created_by_id == current_user.id)
+    sections = db.scalars(sections_query).all()
+    questions = db.scalars(questions_query).all()
     return AdminOverviewOut(
         users=[serialize_user(user) for user in users],
         test_configs=[serialize_test_config(config) for config in configs],
-        courses=[serialize_course(course) for course in courses],
+        courses=[
+            serialize_course(
+                course,
+                managed_by_user_id=current_user.id if current_user.role == UserRole.MODERATOR.value else None,
+            )
+            for course in courses
+        ],
         sections=[serialize_test_section(section) for section in sections],
         questions=[serialize_question_admin(question) for question in questions],
     )
@@ -1467,7 +1605,7 @@ def admin_user_stats(
 @app.post("/admin/courses", response_model=CourseOut)
 def admin_create_course(
     payload: CourseCreateIn,
-    _: Annotated[User, Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))],
+    current_user: Annotated[User, Depends(require_roles(UserRole.MODERATOR, UserRole.ADMIN, UserRole.SUPER_ADMIN))],
     db: Annotated[Session, Depends(get_db)],
 ):
     title = payload.title.strip()
@@ -1479,6 +1617,8 @@ def admin_create_course(
         summary=payload.summary.strip(),
         content=payload.content.strip(),
         is_active=payload.is_active,
+        created_by_id=current_user.id,
+        **approval_fields_for_create(current_user),
     )
     db.add(course)
     db.commit()
@@ -1490,12 +1630,13 @@ def admin_create_course(
 def admin_update_course(
     course_id: int,
     payload: CourseUpdateIn,
-    _: Annotated[User, Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))],
+    current_user: Annotated[User, Depends(require_roles(UserRole.MODERATOR, UserRole.ADMIN, UserRole.SUPER_ADMIN))],
     db: Annotated[Session, Depends(get_db)],
 ):
     course = db.get(Course, course_id)
     if course is None:
         raise HTTPException(status_code=404, detail="Course not found.")
+    require_content_access(current_user, course, "courses")
     if payload.title is not None:
         title = payload.title.strip()
         duplicate = db.scalar(select(Course).where(func.lower(Course.title) == title.lower(), Course.id != course.id))
@@ -1508,6 +1649,7 @@ def admin_update_course(
         course.content = payload.content.strip()
     if payload.is_active is not None:
         course.is_active = payload.is_active
+    mark_pending_after_moderator_edit(current_user, course)
     db.commit()
     db.refresh(course)
     return serialize_course(course)
@@ -1516,12 +1658,13 @@ def admin_update_course(
 @app.post("/admin/course-modules", response_model=CourseModuleOut)
 def admin_create_course_module(
     payload: CourseModuleCreateIn,
-    _: Annotated[User, Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))],
+    current_user: Annotated[User, Depends(require_roles(UserRole.MODERATOR, UserRole.ADMIN, UserRole.SUPER_ADMIN))],
     db: Annotated[Session, Depends(get_db)],
 ):
     course = db.get(Course, payload.course_id)
     if course is None:
         raise HTTPException(status_code=404, detail="Course not found.")
+    require_content_access(current_user, course, "courses")
     next_order = (
         db.scalar(select(func.max(CourseModule.order_index)).where(CourseModule.course_id == course.id))
         or 0
@@ -1535,6 +1678,7 @@ def admin_create_course_module(
         order_index=next_order,
         is_active=payload.is_active,
     )
+    mark_pending_after_moderator_edit(current_user, course)
     db.add(module)
     db.commit()
     db.refresh(module)
@@ -1545,12 +1689,13 @@ def admin_create_course_module(
 def admin_update_course_module(
     module_id: int,
     payload: CourseModuleUpdateIn,
-    _: Annotated[User, Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))],
+    current_user: Annotated[User, Depends(require_roles(UserRole.MODERATOR, UserRole.ADMIN, UserRole.SUPER_ADMIN))],
     db: Annotated[Session, Depends(get_db)],
 ):
     module = db.get(CourseModule, module_id)
     if module is None:
         raise HTTPException(status_code=404, detail="Module not found.")
+    require_content_access(current_user, module.course, "courses")
     if payload.title is not None:
         module.title = payload.title.strip()
     if payload.module_type is not None:
@@ -1563,6 +1708,7 @@ def admin_update_course_module(
         module.order_index = payload.order_index
     if payload.is_active is not None:
         module.is_active = payload.is_active
+    mark_pending_after_moderator_edit(current_user, module.course)
     db.commit()
     db.refresh(module)
     return serialize_course_module(module)
@@ -1571,12 +1717,14 @@ def admin_update_course_module(
 @app.delete("/admin/course-modules/{module_id}")
 def admin_delete_course_module(
     module_id: int,
-    _: Annotated[User, Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))],
+    current_user: Annotated[User, Depends(require_roles(UserRole.MODERATOR, UserRole.ADMIN, UserRole.SUPER_ADMIN))],
     db: Annotated[Session, Depends(get_db)],
 ):
     module = db.get(CourseModule, module_id)
     if module is None:
         raise HTTPException(status_code=404, detail="Module not found.")
+    require_content_access(current_user, module.course, "courses")
+    mark_pending_after_moderator_edit(current_user, module.course)
     db.delete(module)
     db.commit()
     return {"deleted": True}
@@ -1584,7 +1732,7 @@ def admin_delete_course_module(
 
 @app.post("/admin/course-module-files", response_model=CourseModuleFileOut)
 def admin_upload_course_module_file(
-    _: Annotated[User, Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))],
+    _: Annotated[User, Depends(require_roles(UserRole.MODERATOR, UserRole.ADMIN, UserRole.SUPER_ADMIN))],
     file: UploadFile = File(...),
 ):
     original = Path(file.filename or "course-file").name
@@ -1602,18 +1750,42 @@ def admin_upload_course_module_file(
 @app.delete("/admin/courses/{course_id}")
 def admin_delete_course(
     course_id: int,
-    _: Annotated[User, Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))],
+    current_user: Annotated[User, Depends(require_roles(UserRole.MODERATOR, UserRole.ADMIN, UserRole.SUPER_ADMIN))],
     db: Annotated[Session, Depends(get_db)],
 ):
     course = db.get(Course, course_id)
     if course is None:
         raise HTTPException(status_code=404, detail="Course not found.")
+    require_content_access(current_user, course, "courses")
     for config in course.tests:
         config.course_id = None
     db.execute(delete(CourseCompletion).where(CourseCompletion.course_id == course_id))
     db.delete(course)
     db.commit()
     return {"deleted": True}
+
+
+@app.patch("/admin/courses/{course_id}/approval", response_model=CourseOut)
+def admin_set_course_approval(
+    course_id: int,
+    payload: ContentApprovalIn,
+    current_user: Annotated[User, Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))],
+    db: Annotated[Session, Depends(get_db)],
+):
+    course = db.get(Course, course_id)
+    if course is None:
+        raise HTTPException(status_code=404, detail="Course not found.")
+    if payload.approved:
+        course.approval_status = "approved"
+        course.approved_by_id = current_user.id
+        course.approved_at = dt.datetime.utcnow()
+    else:
+        course.approval_status = "rejected"
+        course.approved_by_id = current_user.id
+        course.approved_at = dt.datetime.utcnow()
+    db.commit()
+    db.refresh(course)
+    return serialize_course(course)
 
 
 @app.post("/admin/test-access-overrides")
@@ -1648,8 +1820,8 @@ def admin_create_user(
 ):
     if payload.role == UserRole.SUPER_ADMIN:
         raise HTTPException(status_code=403, detail="Cannot create another super admin through this endpoint.")
-    if current_user.role == UserRole.ADMIN.value and payload.role != UserRole.USER:
-        raise HTTPException(status_code=403, detail="Admins can only create regular users.")
+    if current_user.role == UserRole.ADMIN.value and payload.role not in {UserRole.USER, UserRole.MODERATOR}:
+        raise HTTPException(status_code=403, detail="Admins can only create users and moderators.")
 
     existing_username = db.scalar(select(User).where(User.username == payload.username.strip()))
     if existing_username:
@@ -1689,8 +1861,8 @@ def admin_update_user(
         raise HTTPException(status_code=403, detail="Cannot assign super admin role.")
     if user.role == UserRole.SUPER_ADMIN.value and payload.role is not None and payload.role.value != user.role:
         raise HTTPException(status_code=403, detail="Super admin role cannot be changed.")
-    if current_user.role == UserRole.ADMIN.value and payload.role is not None and payload.role != UserRole.USER:
-        raise HTTPException(status_code=403, detail="Admins can only assign user role.")
+    if current_user.role == UserRole.ADMIN.value and payload.role is not None and payload.role not in {UserRole.USER, UserRole.MODERATOR}:
+        raise HTTPException(status_code=403, detail="Admins can only assign user or moderator role.")
 
     if payload.username is not None:
         username_clean = payload.username.strip()
@@ -1752,6 +1924,12 @@ def admin_delete_user(
     created_users = db.scalars(select(User).where(User.created_by_id == user.id)).all()
     for created_user in created_users:
         created_user.created_by_id = None
+    authored_tests = db.scalars(select(TestConfig).where(TestConfig.created_by_id == user.id)).all()
+    for test_config in authored_tests:
+        test_config.created_by_id = None
+    authored_courses = db.scalars(select(Course).where(Course.created_by_id == user.id)).all()
+    for course in authored_courses:
+        course.created_by_id = None
 
     db.execute(
         delete(UserFollow).where(
@@ -1770,7 +1948,7 @@ def admin_delete_user(
 @app.post("/admin/test-configs", response_model=TestConfigOut)
 def admin_upsert_test_config(
     payload: TestConfigCreateIn,
-    _: Annotated[User, Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))],
+    current_user: Annotated[User, Depends(require_roles(UserRole.MODERATOR, UserRole.ADMIN, UserRole.SUPER_ADMIN))],
     db: Annotated[Session, Depends(get_db)],
 ):
     existing = db.scalar(
@@ -1779,13 +1957,18 @@ def admin_upsert_test_config(
             TestConfig.level_name == payload.level_name.strip(),
         )
     )
-    if payload.course_id is not None and db.get(Course, payload.course_id) is None:
-        raise HTTPException(status_code=404, detail="Course not found.")
+    if payload.course_id is not None:
+        course = db.get(Course, payload.course_id)
+        if course is None:
+            raise HTTPException(status_code=404, detail="Course not found.")
+        require_content_access(current_user, course, "courses")
     if existing:
+        require_content_access(current_user, existing, "tests")
         existing.duration_seconds = payload.duration_seconds
         existing.passing_percent = payload.passing_percent
         existing.is_active = payload.is_active
         existing.course_id = payload.course_id
+        mark_pending_after_moderator_edit(current_user, existing)
         db.commit()
         db.refresh(existing)
         return serialize_test_config(existing)
@@ -1797,6 +1980,8 @@ def admin_upsert_test_config(
         passing_percent=payload.passing_percent,
         is_active=payload.is_active,
         course_id=payload.course_id,
+        created_by_id=current_user.id,
+        **approval_fields_for_create(current_user),
     )
     db.add(config)
     db.commit()
@@ -1806,15 +1991,17 @@ def admin_upsert_test_config(
 
 @app.get("/admin/test-configs", response_model=list[TestConfigOut])
 def admin_list_test_configs(
-    _: Annotated[User, Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))],
+    current_user: Annotated[User, Depends(require_roles(UserRole.MODERATOR, UserRole.ADMIN, UserRole.SUPER_ADMIN))],
     db: Annotated[Session, Depends(get_db)],
 ):
     configs = db.scalars(
-        select(TestConfig)
+        visible_content_query(current_user, TestConfig)
         .options(
             selectinload(TestConfig.questions),
             selectinload(TestConfig.sections).selectinload(TestSection.questions),
             selectinload(TestConfig.course),
+            selectinload(TestConfig.author),
+            selectinload(TestConfig.approver),
         )
         .order_by(TestConfig.topic_name, TestConfig.level_name)
     ).all()
@@ -1825,12 +2012,13 @@ def admin_list_test_configs(
 def admin_update_test_config(
     test_config_id: int,
     payload: TestConfigUpdateIn,
-    _: Annotated[User, Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))],
+    current_user: Annotated[User, Depends(require_roles(UserRole.MODERATOR, UserRole.ADMIN, UserRole.SUPER_ADMIN))],
     db: Annotated[Session, Depends(get_db)],
 ):
     config = db.get(TestConfig, test_config_id)
     if config is None:
         raise HTTPException(status_code=404, detail="Test config not found.")
+    require_content_access(current_user, config, "tests")
 
     if payload.topic_name is not None:
         config.topic_name = payload.topic_name.strip()
@@ -1843,9 +2031,13 @@ def admin_update_test_config(
     if payload.is_active is not None:
         config.is_active = payload.is_active
     if "course_id" in payload.model_fields_set:
-        if payload.course_id is not None and db.get(Course, payload.course_id) is None:
-            raise HTTPException(status_code=404, detail="Course not found.")
+        if payload.course_id is not None:
+            course = db.get(Course, payload.course_id)
+            if course is None:
+                raise HTTPException(status_code=404, detail="Course not found.")
+            require_content_access(current_user, course, "courses")
         config.course_id = payload.course_id
+    mark_pending_after_moderator_edit(current_user, config)
 
     db.commit()
     db.refresh(config)
@@ -1855,12 +2047,13 @@ def admin_update_test_config(
 @app.delete("/admin/test-configs/{test_config_id}")
 def admin_delete_test_config(
     test_config_id: int,
-    _: Annotated[User, Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))],
+    current_user: Annotated[User, Depends(require_roles(UserRole.MODERATOR, UserRole.ADMIN, UserRole.SUPER_ADMIN))],
     db: Annotated[Session, Depends(get_db)],
 ):
     config = db.get(TestConfig, test_config_id)
     if config is None:
         raise HTTPException(status_code=404, detail="Test config not found.")
+    require_content_access(current_user, config, "tests")
 
     attempt_count = db.scalar(select(func.count(Attempt.id)).where(Attempt.test_config_id == test_config_id)) or 0
     if int(attempt_count) > 0:
@@ -1876,15 +2069,39 @@ def admin_delete_test_config(
     return {"deleted": True}
 
 
+@app.patch("/admin/test-configs/{test_config_id}/approval", response_model=TestConfigOut)
+def admin_set_test_config_approval(
+    test_config_id: int,
+    payload: ContentApprovalIn,
+    current_user: Annotated[User, Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))],
+    db: Annotated[Session, Depends(get_db)],
+):
+    config = db.get(TestConfig, test_config_id)
+    if config is None:
+        raise HTTPException(status_code=404, detail="Test config not found.")
+    if payload.approved:
+        config.approval_status = "approved"
+        config.approved_by_id = current_user.id
+        config.approved_at = dt.datetime.utcnow()
+    else:
+        config.approval_status = "rejected"
+        config.approved_by_id = current_user.id
+        config.approved_at = dt.datetime.utcnow()
+    db.commit()
+    db.refresh(config)
+    return serialize_test_config(config)
+
+
 @app.post("/admin/test-sections", response_model=TestSectionOut)
 def admin_create_test_section(
     payload: TestSectionCreateIn,
-    _: Annotated[User, Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))],
+    current_user: Annotated[User, Depends(require_roles(UserRole.MODERATOR, UserRole.ADMIN, UserRole.SUPER_ADMIN))],
     db: Annotated[Session, Depends(get_db)],
 ):
     config = db.get(TestConfig, payload.test_config_id)
     if config is None:
         raise HTTPException(status_code=404, detail="Test config not found.")
+    require_content_access(current_user, config, "tests")
     name = payload.name.strip()
     duplicate = db.scalar(
         select(TestSection).where(
@@ -1914,6 +2131,7 @@ def admin_create_test_section(
         section_type=section_type,
         global_question=global_question,
     )
+    mark_pending_after_moderator_edit(current_user, config)
     db.add(section)
     db.commit()
     db.refresh(section)
@@ -1922,15 +2140,17 @@ def admin_create_test_section(
 
 @app.get("/admin/test-sections", response_model=list[TestSectionOut])
 def admin_list_test_sections(
-    _: Annotated[User, Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))],
+    current_user: Annotated[User, Depends(require_roles(UserRole.MODERATOR, UserRole.ADMIN, UserRole.SUPER_ADMIN))],
     db: Annotated[Session, Depends(get_db)],
     test_config_id: int | None = Query(default=None),
 ):
-    query = select(TestSection).options(selectinload(TestSection.questions)).order_by(
+    query = select(TestSection).join(TestConfig).options(selectinload(TestSection.questions)).order_by(
         TestSection.test_config_id,
         TestSection.order_index,
         TestSection.id,
     )
+    if current_user.role == UserRole.MODERATOR.value:
+        query = query.where(TestConfig.created_by_id == current_user.id)
     if test_config_id is not None:
         query = query.where(TestSection.test_config_id == test_config_id)
     sections = db.scalars(query).all()
@@ -1941,12 +2161,13 @@ def admin_list_test_sections(
 def admin_reorder_test_sections(
     test_config_id: int,
     payload: TestSectionReorderIn,
-    _: Annotated[User, Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))],
+    current_user: Annotated[User, Depends(require_roles(UserRole.MODERATOR, UserRole.ADMIN, UserRole.SUPER_ADMIN))],
     db: Annotated[Session, Depends(get_db)],
 ):
     config = db.get(TestConfig, test_config_id)
     if config is None:
         raise HTTPException(status_code=404, detail="Test config not found.")
+    require_content_access(current_user, config, "tests")
     sections = db.scalars(
         select(TestSection)
         .options(selectinload(TestSection.questions))
@@ -1964,6 +2185,7 @@ def admin_reorder_test_sections(
     ordered_ids.extend(section.id for section in sections if section.id not in ordered_ids)
     for index, section_id in enumerate(ordered_ids, start=1):
         section_by_id[section_id].order_index = index
+    mark_pending_after_moderator_edit(current_user, config)
     db.commit()
     reordered = sorted(sections, key=lambda item: (item.order_index, item.id))
     return [serialize_test_section(section) for section in reordered]
@@ -1973,12 +2195,13 @@ def admin_reorder_test_sections(
 def admin_update_test_section(
     section_id: int,
     payload: TestSectionUpdateIn,
-    _: Annotated[User, Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))],
+    current_user: Annotated[User, Depends(require_roles(UserRole.MODERATOR, UserRole.ADMIN, UserRole.SUPER_ADMIN))],
     db: Annotated[Session, Depends(get_db)],
 ):
     section = db.get(TestSection, section_id)
     if section is None:
         raise HTTPException(status_code=404, detail="Section not found.")
+    require_content_access(current_user, section.test_config, "tests")
     if payload.name is not None:
         name = payload.name.strip()
         duplicate = db.scalar(
@@ -2005,6 +2228,7 @@ def admin_update_test_section(
         section.global_question = normalize_global_question(section_type, payload.global_question)
     if section.section_type == "case_scenario" and not section.global_question:
         raise HTTPException(status_code=400, detail="Global question is required for case-scenario sections.")
+    mark_pending_after_moderator_edit(current_user, section.test_config)
     db.commit()
     db.refresh(section)
     return serialize_test_section(section)
@@ -2013,12 +2237,14 @@ def admin_update_test_section(
 @app.delete("/admin/test-sections/{section_id}")
 def admin_delete_test_section(
     section_id: int,
-    _: Annotated[User, Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))],
+    current_user: Annotated[User, Depends(require_roles(UserRole.MODERATOR, UserRole.ADMIN, UserRole.SUPER_ADMIN))],
     db: Annotated[Session, Depends(get_db)],
 ):
     section = db.get(TestSection, section_id)
     if section is None:
         raise HTTPException(status_code=404, detail="Section not found.")
+    require_content_access(current_user, section.test_config, "tests")
+    mark_pending_after_moderator_edit(current_user, section.test_config)
     for question in section.questions:
         question.section_id = None
     db.delete(section)
@@ -2029,12 +2255,13 @@ def admin_delete_test_section(
 @app.post("/admin/questions", response_model=QuestionPublicOut)
 def admin_add_question(
     payload: QuestionCreateIn,
-    _: Annotated[User, Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))],
+    current_user: Annotated[User, Depends(require_roles(UserRole.MODERATOR, UserRole.ADMIN, UserRole.SUPER_ADMIN))],
     db: Annotated[Session, Depends(get_db)],
 ):
     config = db.get(TestConfig, payload.test_config_id)
     if config is None:
         raise HTTPException(status_code=404, detail="Test config not found.")
+    require_content_access(current_user, config, "tests")
     if payload.section_id is not None:
         section = db.get(TestSection, payload.section_id)
         if section is None or section.test_config_id != payload.test_config_id:
@@ -2057,6 +2284,7 @@ def admin_add_question(
         options_json=build_question_payload(cleaned_options, clean_correct_indices),
         correct_index=clean_correct_indices[0],
     )
+    mark_pending_after_moderator_edit(current_user, config)
     db.add(question)
     db.commit()
     db.refresh(question)
@@ -2073,11 +2301,13 @@ def admin_add_question(
 
 @app.get("/admin/questions", response_model=list[QuestionAdminOut])
 def admin_list_questions(
-    _: Annotated[User, Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))],
+    current_user: Annotated[User, Depends(require_roles(UserRole.MODERATOR, UserRole.ADMIN, UserRole.SUPER_ADMIN))],
     db: Annotated[Session, Depends(get_db)],
     test_config_id: int | None = Query(default=None),
 ):
-    query = select(Question).order_by(Question.id.desc())
+    query = select(Question).join(TestConfig).order_by(Question.id.desc())
+    if current_user.role == UserRole.MODERATOR.value:
+        query = query.where(TestConfig.created_by_id == current_user.id)
     if test_config_id is not None:
         query = query.where(Question.test_config_id == test_config_id)
     questions = db.scalars(query).all()
@@ -2088,12 +2318,13 @@ def admin_list_questions(
 def admin_update_question(
     question_id: int,
     payload: QuestionUpdateIn,
-    _: Annotated[User, Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))],
+    current_user: Annotated[User, Depends(require_roles(UserRole.MODERATOR, UserRole.ADMIN, UserRole.SUPER_ADMIN))],
     db: Annotated[Session, Depends(get_db)],
 ):
     question = db.get(Question, question_id)
     if question is None:
         raise HTTPException(status_code=404, detail="Question not found.")
+    require_content_access(current_user, question.test_config, "tests")
 
     if "section_id" in payload.model_fields_set:
         if payload.section_id is None:
@@ -2129,6 +2360,7 @@ def admin_update_question(
 
     question.correct_index = correct_indices[0]
     question.options_json = build_question_payload(options, correct_indices)
+    mark_pending_after_moderator_edit(current_user, question.test_config)
 
     db.commit()
     db.refresh(question)
@@ -2138,12 +2370,14 @@ def admin_update_question(
 @app.delete("/admin/questions/{question_id}")
 def admin_delete_question(
     question_id: int,
-    _: Annotated[User, Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))],
+    current_user: Annotated[User, Depends(require_roles(UserRole.MODERATOR, UserRole.ADMIN, UserRole.SUPER_ADMIN))],
     db: Annotated[Session, Depends(get_db)],
 ):
     question = db.get(Question, question_id)
     if question is None:
         raise HTTPException(status_code=404, detail="Question not found.")
+    require_content_access(current_user, question.test_config, "tests")
+    mark_pending_after_moderator_edit(current_user, question.test_config)
     db.delete(question)
     db.commit()
     return {"deleted": True}
@@ -2157,7 +2391,7 @@ def open_course_module(
     db: Annotated[Session, Depends(get_db)],
 ):
     course = db.get(Course, course_id)
-    if course is None or not course.is_active:
+    if course is None or not is_content_published(course):
         raise HTTPException(status_code=404, detail="Course not found.")
     module = db.get(CourseModule, module_id)
     if module is None or module.course_id != course.id or not module.is_active:
@@ -2175,7 +2409,12 @@ def open_course_module(
         db.refresh(course)
     completed_course_ids = user_completed_course_ids(db, current_user.id)
     override_test_ids = user_override_test_ids(db, current_user.id)
-    return serialize_course(course, completed_course_ids=completed_course_ids, override_test_ids=override_test_ids)
+    return serialize_course(
+        course,
+        completed_course_ids=completed_course_ids,
+        override_test_ids=override_test_ids,
+        public_only=True,
+    )
 
 
 @app.get("/tests/catalog", response_model=list[TestConfigOut])
@@ -2191,26 +2430,31 @@ def user_list_test_catalog(
             selectinload(TestConfig.questions),
             selectinload(TestConfig.sections).selectinload(TestSection.questions),
             selectinload(TestConfig.course),
+            selectinload(TestConfig.author),
+            selectinload(TestConfig.approver),
         )
-        .where(TestConfig.is_active.is_(True))
+        .where(TestConfig.is_active.is_(True), TestConfig.approval_status == "approved")
         .order_by(TestConfig.topic_name, TestConfig.level_name)
     ).all()
     return [
         serialize_test_config(config, completed_course_ids=completed_course_ids, override_test_ids=override_test_ids)
         for config in configs
+        if config.course_id is None or (config.course is not None and is_content_published(config.course))
     ]
 
 
 @app.post("/tests/start/{test_config_id}", response_model=TestStartOut)
 def user_start_test(
     test_config_id: int,
-    current_user: Annotated[User, Depends(require_roles(UserRole.USER, UserRole.ADMIN, UserRole.SUPER_ADMIN))],
+    current_user: Annotated[User, Depends(require_roles(UserRole.USER, UserRole.MODERATOR, UserRole.ADMIN, UserRole.SUPER_ADMIN))],
     db: Annotated[Session, Depends(get_db)],
 ):
     config = db.get(TestConfig, test_config_id)
-    if config is None or not config.is_active:
-        raise HTTPException(status_code=404, detail="Test config not found or inactive.")
+    if config is None or not is_content_published(config):
+        raise HTTPException(status_code=404, detail="Test config not found, inactive, or pending approval.")
     if config.course_id is not None:
+        if config.course is None or not is_content_published(config.course):
+            raise HTTPException(status_code=403, detail="The linked course is not available yet.")
         completed = db.get(CourseCompletion, {"user_id": current_user.id, "course_id": config.course_id}) is not None
         override = db.get(TestAccessOverride, {"user_id": current_user.id, "test_config_id": config.id}) is not None
         if not completed and not override:
@@ -2458,7 +2702,7 @@ def social_add_comment(
     db: Annotated[Session, Depends(get_db)],
 ):
     config = db.get(TestConfig, test_config_id)
-    if config is None or not config.is_active:
+    if config is None or not is_content_published(config):
         raise HTTPException(status_code=404, detail="Test config not found.")
     content = payload.content.strip()
     if not content:

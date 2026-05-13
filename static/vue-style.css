@@ -932,6 +932,18 @@ body {
     color: #1d4ed8;
 }
 
+.admin-role-badge.role-super_admin .icon {
+    color: #7c3aed;
+}
+
+.admin-role-badge.role-admin .icon {
+    color: #1d4ed8;
+}
+
+.admin-role-badge.role-moderator .icon {
+    color: #b45309;
+}
+
 .user-actions {
     display: flex;
     align-items: center;
@@ -2083,6 +2095,24 @@ body {
 }
 
 .admin-state-badge.inactive {
+    background: #fff1f2;
+    border: 1px solid #fecdd3;
+    color: #9f1239;
+}
+
+.admin-state-badge.approved {
+    background: #e9f9ef;
+    border: 1px solid #b8ebc7;
+    color: #166534;
+}
+
+.admin-state-badge.pending {
+    background: #fff7ed;
+    border: 1px solid #fed7aa;
+    color: #9a3412;
+}
+
+.admin-state-badge.rejected {
     background: #fff1f2;
     border: 1px solid #fecdd3;
     color: #9f1239;

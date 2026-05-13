@@ -46,8 +46,9 @@ To support shared credentials between website + desktop app, web-based admin pan
 
 - Separate API + database layer that can be hosted independently from clients
 - Role-based users:
-  - `super_admin` can create `admin` and `user`
-  - `admin` can create `user` and add credits
+  - `super_admin` can create `admin`, `moderator`, and `user`
+  - `admin` can create `moderator` and `user`, and add credits
+  - `moderator` can create and manage only the tests and courses they authored
 - Shared login credentials for all clients (website + desktop)
 - Credits model (`1 credit = 1 test try`)
 - Admin-managed test settings:
@@ -91,11 +92,11 @@ uvicorn platform_api:app --host 0.0.0.0 --port 8000 --reload
 
 1. Call `POST /auth/bootstrap-super-admin` once to create first super admin.
 2. Login using `POST /auth/login`.
-3. Super admin creates admins via `POST /admin/users`.
-4. Admin creates users and adds credits via:
+3. Super admin creates admins or moderators via `POST /admin/users`.
+4. Admin creates moderators or users and adds credits via:
    - `POST /admin/users`
    - `PATCH /admin/users/{user_id}/credits`
-5. Admin configures tests:
+5. Admins and moderators configure tests:
    - `POST /admin/test-configs`
    - `POST /admin/questions`
 

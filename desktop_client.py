@@ -449,7 +449,7 @@ class DesktopPlatformApp(tk.Tk):
         self.notebook.add(self.dashboard_tab, text="Dashboard")
         self.notebook.add(self.tests_tab, text="Take Test")
 
-        if self.user["role"] in {"admin", "super_admin"}:
+        if self.user["role"] in {"moderator", "admin", "super_admin"}:
             self.admin_tab = ttk.Frame(self.notebook, padding=12)
             self.notebook.add(self.admin_tab, text="Admin")
             self._build_admin_tab()
@@ -471,7 +471,7 @@ class DesktopPlatformApp(tk.Tk):
         self.profile_box.configure(state="disabled")
 
     def _build_tests_tab(self):
-        columns = ("id", "topic", "level", "duration", "pass", "questions")
+        columns = ("id", "topic", "level", "duration", "pass", "questions", "author", "approval")
         self.catalog_tree = ttk.Treeview(self.tests_tab, columns=columns, show="headings", height=14)
         for col, title, width in [
             ("id", "ID", 60),
@@ -480,6 +480,8 @@ class DesktopPlatformApp(tk.Tk):
             ("duration", "Duration", 130),
             ("pass", "Pass %", 110),
             ("questions", "Questions", 110),
+            ("author", "Author", 140),
+            ("approval", "Approval", 120),
         ]:
             self.catalog_tree.heading(col, text=title)
             self.catalog_tree.column(col, width=width, anchor="center")
@@ -509,7 +511,12 @@ class DesktopPlatformApp(tk.Tk):
         self.new_user_username = ttk.Entry(create_frame)
         self.new_user_email = ttk.Entry(create_frame)
         self.new_user_password = ttk.Entry(create_frame, show="*")
-        role_values = ["user"] if self.user["role"] == "admin" else ["user", "admin"]
+        if self.user["role"] == "super_admin":
+            role_values = ["user", "moderator", "admin"]
+        elif self.user["role"] == "admin":
+            role_values = ["user", "moderator"]
+        else:
+            role_values = ["user"]
         self.new_user_role = ttk.Combobox(create_frame, state="readonly", values=role_values)
         self.new_user_role.set(role_values[0])
         self.new_user_credits = ttk.Entry(create_frame)
@@ -618,7 +625,7 @@ class DesktopPlatformApp(tk.Tk):
 
         self.config_tree = ttk.Treeview(
             tables,
-            columns=("id", "topic", "level", "duration", "pass", "q", "bank", "sections"),
+            columns=("id", "topic", "level", "duration", "pass", "q", "bank", "sections", "author", "approval"),
             show="headings",
             height=12,
         )
@@ -631,6 +638,8 @@ class DesktopPlatformApp(tk.Tk):
             ("q", "Shown", 60),
             ("bank", "Bank", 55),
             ("sections", "Sec", 50),
+            ("author", "Author", 110),
+            ("approval", "Approval", 120),
         ]:
             self.config_tree.heading(col, text=title)
             self.config_tree.column(col, width=width, anchor="center")
@@ -718,6 +727,8 @@ class DesktopPlatformApp(tk.Tk):
                     f"{int(row['duration_seconds']) // 60} min",
                     f"{float(row['passing_percent']):.2f}",
                     row["question_count"],
+                    row.get("author_username") or "Unknown",
+                    row.get("approval_status", "approved"),
                 ),
             )
 
@@ -739,7 +750,7 @@ class DesktopPlatformApp(tk.Tk):
         if self.admin_tab is None:
             return
         try:
-            users = self.api.admin_users()
+            users = [] if self.user["role"] == "moderator" else self.api.admin_users()
             configs = self.api.admin_test_configs()
             sections = self.api.admin_test_sections()
         except APIError as error:
@@ -770,6 +781,8 @@ class DesktopPlatformApp(tk.Tk):
                     config["question_count"],
                     config.get("bank_question_count", config["question_count"]),
                     config.get("section_count", 0),
+                    config.get("author_username") or "Unknown",
+                    config.get("approval_status", "approved"),
                 ),
             )
 

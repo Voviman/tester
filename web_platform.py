@@ -91,6 +91,10 @@ class TestAccessOverrideIn(BaseModel):
     grant: bool = True
 
 
+class ContentApprovalIn(BaseModel):
+    approved: bool = True
+
+
 class QuestionCreateIn(BaseModel):
     test_config_id: int
     section_id: int | None = None
@@ -246,7 +250,7 @@ def api_get_many(
 def require_admin(request: Request):
     token = require_token(request)
     me = api_request(token, "GET", "/auth/me")
-    if me["role"] not in {"admin", "super_admin"}:
+    if me["role"] not in {"moderator", "admin", "super_admin"}:
         raise HTTPException(status_code=403, detail="Admin access required.")
     return token, me
 
@@ -464,6 +468,12 @@ def webapi_admin_delete_course(request: Request, course_id: int):
     return api_request(token, "DELETE", f"/admin/courses/{course_id}")
 
 
+@app.patch("/webapi/admin/courses/{course_id}/approval")
+def webapi_admin_course_approval(request: Request, course_id: int, payload: ContentApprovalIn):
+    token = require_token(request)
+    return api_request(token, "PATCH", f"/admin/courses/{course_id}/approval", json=payload.model_dump())
+
+
 @app.post("/webapi/admin/course-modules")
 def webapi_admin_create_course_module(request: Request, payload: CourseModuleIn):
     token = require_token(request)
@@ -583,6 +593,12 @@ def webapi_admin_update_config(request: Request, test_config_id: int, payload: C
 def webapi_admin_delete_config(request: Request, test_config_id: int):
     token = require_token(request)
     return api_request(token, "DELETE", f"/admin/test-configs/{test_config_id}")
+
+
+@app.patch("/webapi/admin/test-configs/{test_config_id}/approval")
+def webapi_admin_config_approval(request: Request, test_config_id: int, payload: ContentApprovalIn):
+    token = require_token(request)
+    return api_request(token, "PATCH", f"/admin/test-configs/{test_config_id}/approval", json=payload.model_dump())
 
 
 @app.post("/webapi/admin/test-sections")
