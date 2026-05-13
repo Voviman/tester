@@ -71,6 +71,10 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, futu
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
 
+def ddl_type(sql_type) -> str:
+    return sql_type.compile(dialect=engine.dialect)
+
+
 class Base(DeclarativeBase):
     pass
 
@@ -1426,6 +1430,7 @@ def on_startup():
     Base.metadata.create_all(bind=engine)
     inspector = inspect(engine)
     columns_by_table = {table: {column["name"] for column in inspector.get_columns(table)} for table in inspector.get_table_names()}
+    datetime_type = ddl_type(DateTime())
     with engine.begin() as conn:
         question_columns = columns_by_table.get("questions", set())
         if "questions" in columns_by_table and "section_id" not in question_columns:
@@ -1449,7 +1454,7 @@ def on_startup():
         if "test_configs" in columns_by_table and "approved_by_id" not in test_config_columns:
             conn.execute(text("ALTER TABLE test_configs ADD COLUMN approved_by_id INTEGER"))
         if "test_configs" in columns_by_table and "approved_at" not in test_config_columns:
-            conn.execute(text("ALTER TABLE test_configs ADD COLUMN approved_at DATETIME"))
+            conn.execute(text(f"ALTER TABLE test_configs ADD COLUMN approved_at {datetime_type}"))
         course_columns = columns_by_table.get("courses", set())
         if "courses" in columns_by_table and "created_by_id" not in course_columns:
             conn.execute(text("ALTER TABLE courses ADD COLUMN created_by_id INTEGER"))
@@ -1458,7 +1463,7 @@ def on_startup():
         if "courses" in columns_by_table and "approved_by_id" not in course_columns:
             conn.execute(text("ALTER TABLE courses ADD COLUMN approved_by_id INTEGER"))
         if "courses" in columns_by_table and "approved_at" not in course_columns:
-            conn.execute(text("ALTER TABLE courses ADD COLUMN approved_at DATETIME"))
+            conn.execute(text(f"ALTER TABLE courses ADD COLUMN approved_at {datetime_type}"))
         section_columns = columns_by_table.get("test_sections", set())
         if "test_sections" in columns_by_table and "order_index" not in section_columns:
             conn.execute(text("ALTER TABLE test_sections ADD COLUMN order_index INTEGER DEFAULT 0"))
