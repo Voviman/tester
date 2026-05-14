@@ -12,7 +12,7 @@ from typing import Annotated
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import jwt
-from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile, status
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, EmailStr, Field
@@ -57,6 +57,8 @@ DATABASE_URL = normalize_database_url(os.getenv("DATABASE_URL", "sqlite:///./pla
 JWT_SECRET = os.getenv("JWT_SECRET", "change-this-secret-in-production")
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "720"))
+MODERATOR_INVITE_DAYS = 7
+MODERATOR_INVITE_URL = os.getenv("MODERATOR_INVITE_URL", "").strip()
 
 SMTP_HOST = os.getenv("SMTP_HOST", "")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
@@ -107,6 +109,18 @@ class User(Base):
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
 
     attempts: Mapped[list["Attempt"]] = relationship(back_populates="user")
+
+
+class ModeratorInvite(Base):
+    __tablename__ = "moderator_invites"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    created_by_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+    expires_at: Mapped[dt.datetime] = mapped_column(DateTime, index=True)
+    used_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    moderator_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
 
 
 class TestConfig(Base):
@@ -280,6 +294,30 @@ def create_access_token(user: User) -> str:
     expires_at = dt.datetime.utcnow() + dt.timedelta(minutes=JWT_EXPIRE_MINUTES)
     payload = {"sub": str(user.id), "role": user.role, "exp": expires_at}
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+def hash_invite_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def build_moderator_invite_url(request: Request, token: str) -> str:
+    if MODERATOR_INVITE_URL:
+        if "{token}" in MODERATOR_INVITE_URL:
+            return MODERATOR_INVITE_URL.replace("{token}", token)
+        separator = "&" if "?" in MODERATOR_INVITE_URL else "?"
+        return f"{MODERATOR_INVITE_URL}{separator}token={token}"
+    return f"{str(request.base_url).rstrip('/')}/moderator-register?token={token}"
+
+
+def get_valid_moderator_invite(db: Session, token: str, *, lock: bool = False) -> ModeratorInvite:
+    now = dt.datetime.utcnow()
+    query = select(ModeratorInvite).where(ModeratorInvite.token_hash == hash_invite_token(token.strip()))
+    if lock:
+        query = query.with_for_update()
+    invite = db.scalar(query)
+    if invite is None or invite.used_at is not None or invite.expires_at < now:
+        raise HTTPException(status_code=400, detail="Moderator invite link is invalid, expired, or already used.")
+    return invite
 
 
 def parse_question_payload(options_json: str, fallback_correct_index: int | None = None) -> tuple[list[str], list[int]]:
@@ -494,6 +532,26 @@ class UserCreateIn(BaseModel):
     password: str = Field(min_length=8, max_length=128)
     role: UserRole = UserRole.USER
     credits: int = Field(default=0, ge=0)
+
+
+class ModeratorInviteOut(BaseModel):
+    id: int
+    token: str
+    registration_url: str
+    expires_at: dt.datetime
+    used_at: dt.datetime | None = None
+
+
+class ModeratorInviteStatusOut(BaseModel):
+    valid: bool
+    expires_at: dt.datetime | None = None
+
+
+class ModeratorInviteRegisterIn(BaseModel):
+    token: str = Field(min_length=20, max_length=200)
+    username: str = Field(min_length=3, max_length=120)
+    email: EmailStr
+    password: str = Field(min_length=8, max_length=128)
 
 
 class UserOut(BaseModel):
@@ -1524,6 +1582,43 @@ def auth_me(current_user: Annotated[User, Depends(get_current_user)]):
     return serialize_user(current_user)
 
 
+@app.get("/auth/moderator-invites/{token}", response_model=ModeratorInviteStatusOut)
+def moderator_invite_status(token: str, db: Annotated[Session, Depends(get_db)]):
+    try:
+        invite = get_valid_moderator_invite(db, token)
+    except HTTPException:
+        return ModeratorInviteStatusOut(valid=False, expires_at=None)
+    return ModeratorInviteStatusOut(valid=True, expires_at=invite.expires_at)
+
+
+@app.post("/auth/moderator-invites/register", response_model=TokenOut)
+def register_moderator_with_invite(payload: ModeratorInviteRegisterIn, db: Annotated[Session, Depends(get_db)]):
+    invite = get_valid_moderator_invite(db, payload.token, lock=True)
+    username = payload.username.strip()
+    existing_username = db.scalar(select(User).where(User.username == username))
+    if existing_username:
+        raise HTTPException(status_code=409, detail="Username already exists.")
+    existing_email = db.scalar(select(User).where(User.email == payload.email))
+    if existing_email:
+        raise HTTPException(status_code=409, detail="Email already exists.")
+
+    user = User(
+        username=username,
+        email=payload.email,
+        password_hash=hash_password(payload.password),
+        role=UserRole.MODERATOR.value,
+        credits=0,
+        created_by_id=invite.created_by_id,
+    )
+    db.add(user)
+    db.flush()
+    invite.used_at = dt.datetime.utcnow()
+    invite.moderator_user_id = user.id
+    db.commit()
+    db.refresh(user)
+    return TokenOut(access_token=create_access_token(user))
+
+
 @app.get("/admin/users", response_model=list[UserOut])
 def admin_list_users(
     _: Annotated[User, Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))],
@@ -1531,6 +1626,31 @@ def admin_list_users(
 ):
     users = db.scalars(select(User).order_by(User.id.asc())).all()
     return [serialize_user(user) for user in users]
+
+
+@app.post("/admin/moderator-invites", response_model=ModeratorInviteOut)
+def admin_create_moderator_invite(
+    request: Request,
+    current_user: Annotated[User, Depends(require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN))],
+    db: Annotated[Session, Depends(get_db)],
+):
+    token = secrets.token_urlsafe(32)
+    expires_at = dt.datetime.utcnow() + dt.timedelta(days=MODERATOR_INVITE_DAYS)
+    invite = ModeratorInvite(
+        token_hash=hash_invite_token(token),
+        created_by_id=current_user.id,
+        expires_at=expires_at,
+    )
+    db.add(invite)
+    db.commit()
+    db.refresh(invite)
+    return ModeratorInviteOut(
+        id=invite.id,
+        token=token,
+        registration_url=build_moderator_invite_url(request, token),
+        expires_at=invite.expires_at,
+        used_at=invite.used_at,
+    )
 
 
 @app.get("/admin/overview", response_model=AdminOverviewOut)

@@ -14,6 +14,16 @@ createApp({
                 username: "",
                 password: "",
             },
+            moderatorInvite: {
+                token: "",
+                username: "",
+                email: "",
+                password: "",
+                valid: false,
+                expires_at: null,
+                checked: false,
+                generatedUrl: "",
+            },
             userSearchQuery: "",
             testSearchQuery: "",
             testFilterTopic: "",
@@ -175,6 +185,9 @@ createApp({
         },
         canManageUsers() {
             return this.me && (this.me.role === "admin" || this.me.role === "super_admin");
+        },
+        isModeratorRegisterRoute() {
+            return window.location.pathname === "/moderator-register";
         },
         filteredActiveUsers() {
             const users = this.dashboard?.social_dashboard?.active_users || [];
@@ -585,6 +598,11 @@ createApp({
             } catch (_e2) {
                 this.desktopParticipationToken = "";
             }
+        },
+        syncModeratorInviteFromUrl() {
+            if (!this.isModeratorRegisterRoute) return;
+            const token = new URLSearchParams(window.location.search).get("token") || "";
+            this.moderatorInvite.token = token.trim();
         },
         pathToView(pathname) {
             if (pathname === "/profile") return "profile";
@@ -2306,6 +2324,7 @@ createApp({
             this.booting = true;
             this.clearNotices();
             try {
+                this.syncModeratorInviteFromUrl();
                 const session = await this.request("GET", "/webapi/session");
                 this.authenticated = Boolean(session.authenticated);
                 this.me = session.me || null;
@@ -2322,6 +2341,8 @@ createApp({
                 }
                 if (this.authenticated) {
                     await this.loadForCurrentView();
+                } else if (this.isModeratorRegisterRoute) {
+                    await this.loadModeratorInviteStatus();
                 }
             } catch (error) {
                 this.error = error.message;
@@ -2403,6 +2424,70 @@ createApp({
                     this.profileTargetUserId = 0;
                 }
                 window.history.replaceState({}, "", this.viewToPath(this.view));
+                await this.loadForCurrentView();
+            } catch (error) {
+                this.error = error.message;
+            } finally {
+                this.busy = false;
+            }
+        },
+        async loadModeratorInviteStatus() {
+            this.syncModeratorInviteFromUrl();
+            this.moderatorInvite.checked = false;
+            this.moderatorInvite.valid = false;
+            this.moderatorInvite.expires_at = null;
+            const token = String(this.moderatorInvite.token || "").trim();
+            if (!token) {
+                this.error = "Moderator invite token is missing.";
+                this.moderatorInvite.checked = true;
+                return;
+            }
+            try {
+                const data = await this.request("GET", `/webapi/moderator-invites/${encodeURIComponent(token)}`);
+                this.moderatorInvite.valid = Boolean(data.valid);
+                this.moderatorInvite.expires_at = data.expires_at || null;
+                if (!this.moderatorInvite.valid) {
+                    this.error = "This moderator invite link is invalid, expired, or already used.";
+                }
+            } catch (error) {
+                this.error = error.message;
+            } finally {
+                this.moderatorInvite.checked = true;
+            }
+        },
+        async registerModeratorWithInvite() {
+            this.clearNotices();
+            const token = String(this.moderatorInvite.token || "").trim();
+            const username = String(this.moderatorInvite.username || "").trim();
+            const email = String(this.moderatorInvite.email || "").trim();
+            const password = String(this.moderatorInvite.password || "");
+            if (!token || !username || !email || !password) {
+                this.error = "Invite token, username, email and password are required.";
+                return;
+            }
+            if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+                this.error = "Enter a valid email address.";
+                return;
+            }
+            if (password.length < 8) {
+                this.error = "Password must be at least 8 characters.";
+                return;
+            }
+            this.busy = true;
+            try {
+                const data = await this.request("POST", "/webapi/moderator-invites/register", {
+                    token,
+                    username,
+                    email,
+                    password,
+                });
+                this.authenticated = true;
+                this.me = data.me;
+                this.moderatorInvite.password = "";
+                this.success = "Moderator account created.";
+                this.resetPreloadState();
+                this.view = "admin";
+                window.history.replaceState({}, "", "/admin");
                 await this.loadForCurrentView();
             } catch (error) {
                 this.error = error.message;
@@ -2739,6 +2824,28 @@ createApp({
                 };
                 await this.loadAdmin();
                 this.closeUserModal();
+            } catch (error) {
+                this.error = error.message;
+            } finally {
+                this.busy = false;
+            }
+        },
+        async generateModeratorInvite() {
+            this.clearNotices();
+            if (!this.canManageUsers) return;
+            this.busy = true;
+            try {
+                const data = await this.request("POST", "/webapi/admin/moderator-invites", {});
+                this.moderatorInvite.generatedUrl = data.registration_url || "";
+                this.success = "Moderator invite link generated. It expires in 7 days and can be used once.";
+                if (this.moderatorInvite.generatedUrl && navigator.clipboard?.writeText) {
+                    try {
+                        await navigator.clipboard.writeText(this.moderatorInvite.generatedUrl);
+                        this.success = "Moderator invite link generated and copied.";
+                    } catch (_error) {
+                        // Clipboard permission can fail; the visible link is still available.
+                    }
+                }
             } catch (error) {
                 this.error = error.message;
             } finally {

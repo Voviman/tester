@@ -37,6 +37,13 @@ class AdminUserCreateIn(BaseModel):
     credits: int = Field(default=0, ge=0)
 
 
+class ModeratorRegisterIn(BaseModel):
+    token: str = Field(min_length=20)
+    username: str = Field(min_length=3)
+    email: str
+    password: str = Field(min_length=8)
+
+
 class AdminUserUpdateIn(BaseModel):
     username: str = Field(min_length=3)
     email: str
@@ -283,6 +290,11 @@ def admin_page(request: Request):
     return render_vue_app(request)
 
 
+@app.get("/moderator-register", response_class=HTMLResponse)
+def moderator_register_page(request: Request):
+    return render_vue_app(request)
+
+
 @app.get("/courses/{course_id}", response_class=HTMLResponse)
 def course_page(request: Request, course_id: int):
     return render_vue_app(request)
@@ -335,6 +347,33 @@ def webapi_session(request: Request):
         response.delete_cookie(COOKIE_NAME)
         return response
     return {"authenticated": True, "me": me}
+
+
+@app.get("/webapi/moderator-invites/{token}")
+def webapi_moderator_invite_status(token: str):
+    return api_request(None, "GET", f"/auth/moderator-invites/{token}", auth=False)
+
+
+@app.post("/webapi/moderator-invites/register")
+def webapi_moderator_invite_register(payload: ModeratorRegisterIn):
+    token_data = api_request(
+        None,
+        "POST",
+        "/auth/moderator-invites/register",
+        json=payload.model_dump(),
+        auth=False,
+    )
+    token = token_data["access_token"]
+    me = api_request(token, "GET", "/auth/me")
+    response = JSONResponse({"ok": True, "me": me})
+    response.set_cookie(
+        key=COOKIE_NAME,
+        value=token,
+        httponly=True,
+        samesite="lax",
+        max_age=60 * 60 * 12,
+    )
+    return response
 
 
 @app.get("/webapi/dashboard")
@@ -528,6 +567,16 @@ def webapi_admin_test_access_override(request: Request, payload: TestAccessOverr
 def webapi_admin_create_user(request: Request, payload: AdminUserCreateIn):
     token = require_token(request)
     return api_request(token, "POST", "/admin/users", json=payload.model_dump())
+
+
+@app.post("/webapi/admin/moderator-invites")
+def webapi_admin_create_moderator_invite(request: Request):
+    token = require_token(request)
+    invite = api_request(token, "POST", "/admin/moderator-invites", json={})
+    invite_token = str(invite.get("token") or "").strip()
+    if invite_token:
+        invite["registration_url"] = f"{str(request.base_url).rstrip('/')}/moderator-register?token={invite_token}"
+    return invite
 
 
 @app.patch("/webapi/admin/users/{user_id}")

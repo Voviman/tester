@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Testing Platform</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
-    <link rel="stylesheet" href="/static/vue-style.css?v=case-scenario-20260508">
+    <link rel="stylesheet" href="/static/vue-style.css?v=moderator-invites-20260513">
     <script>window.PLATFORM_API_URL = {{ api_base_url|tojson }};</script>
 </head>
 <body>
@@ -54,7 +54,26 @@
             <div v-if="booting" class="state-card">Loading...</div>
 
             <section v-else-if="!authenticated" class="auth-wrap">
-                <div class="auth-card">
+                <div v-if="isModeratorRegisterRoute" class="auth-card">
+                    <h1>Moderator Sign Up</h1>
+                    <div v-if="error" class="alert error">{{ error }}</div>
+                    <div v-if="success" class="alert success">{{ success }}</div>
+                    <div v-if="!moderatorInvite.checked" class="state-card">Checking invite...</div>
+                    <template v-else-if="moderatorInvite.valid">
+                        <p class="muted small">Invite expires {{ formatDate(moderatorInvite.expires_at) }}</p>
+                        <label>Username</label>
+                        <input v-model.trim="moderatorInvite.username" type="text" placeholder="Choose username">
+                        <label>Email</label>
+                        <input v-model.trim="moderatorInvite.email" type="email" placeholder="Enter email">
+                        <label>Password</label>
+                        <input v-model="moderatorInvite.password" type="password" placeholder="Create password" @keyup.enter="registerModeratorWithInvite">
+                        <button class="btn primary full" @click="registerModeratorWithInvite" :disabled="busy">Create Moderator Account</button>
+                    </template>
+                    <template v-else>
+                        <button class="btn secondary full" @click="loadModeratorInviteStatus" :disabled="busy">Check Again</button>
+                    </template>
+                </div>
+                <div v-else class="auth-card">
                     <h1>Sign in</h1>
                     <div v-if="error" class="alert error">{{ error }}</div>
                     <label>Username or Email</label>
@@ -1320,6 +1339,23 @@
                             <p class="muted small">
                                 Use the create, edit, and delete action buttons in the left panel to manage users.
                             </p>
+                            <div class="admin-section-manager">
+                                <div class="admin-section-head">
+                                    <h3>Moderator Invite</h3>
+                                    <span class="small muted">One use | 7 days</span>
+                                </div>
+                                <div class="admin-section-form">
+                                    <button class="btn primary small" type="button" @click="generateModeratorInvite" :disabled="busy">
+                                        Generate Invite Link
+                                    </button>
+                                    <input
+                                        v-if="moderatorInvite.generatedUrl"
+                                        :value="moderatorInvite.generatedUrl"
+                                        readonly
+                                        aria-label="Generated moderator invite link"
+                                    >
+                                </div>
+                            </div>
                         </article>
 
                         <article v-else class="panel admin-user-stats-panel">
@@ -1684,6 +1720,6 @@
     {% endraw %}
 
     <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
-    <script src="/static/vue-app.js?v=case-scenario-20260508"></script>
+    <script src="/static/vue-app.js?v=moderator-invites-20260513"></script>
 </body>
 </html>
