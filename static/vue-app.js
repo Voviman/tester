@@ -89,6 +89,7 @@ createApp({
                 questions: [],
                 activeTab: "tests",
                 testSearchQuery: "",
+                courseSearchQuery: "",
                 userSearchQuery: "",
                 selectedTestConfigId: 0,
                 selectedCourseId: 0,
@@ -310,6 +311,25 @@ createApp({
                 return topic.includes(query) || level.includes(query);
             });
         },
+        filteredAdminCourses() {
+            const items = this.admin.courses || [];
+            const query = String(this.admin.courseSearchQuery || "").trim().toLowerCase();
+            const list = query
+                ? items.filter((item) => {
+                      const title = String(item.title || "").toLowerCase();
+                      const summary = String(item.summary || "").toLowerCase();
+                      const author = String(item.author_username || "").toLowerCase();
+                      return title.includes(query) || summary.includes(query) || author.includes(query);
+                  })
+                : items.slice();
+            return list.sort((a, b) => {
+                const activeDelta = Number(b.is_active !== false) - Number(a.is_active !== false);
+                if (activeDelta) return activeDelta;
+                return String(a.title || "").localeCompare(String(b.title || ""), undefined, {
+                    sensitivity: "base",
+                });
+            });
+        },
         filteredAdminUsers() {
             const users = this.admin.users || [];
             const query = String(this.admin.userSearchQuery || "").trim().toLowerCase();
@@ -328,7 +348,54 @@ createApp({
         activeAdminCourse() {
             if (!this.admin.courses.length) return null;
             const selectedId = Number(this.admin.selectedCourseId);
-            return this.admin.courses.find((item) => item.id === selectedId) || this.admin.courses[0];
+            if (!selectedId) return null;
+            return this.admin.courses.find((item) => item.id === selectedId) || null;
+        },
+        activeAdminCourseModules() {
+            const modules = this.activeAdminCourse?.modules || [];
+            return modules.slice().sort((a, b) => {
+                const orderA = Number(a.order_index || 0);
+                const orderB = Number(b.order_index || 0);
+                if (orderA !== orderB) return orderA - orderB;
+                return Number(a.id || 0) - Number(b.id || 0);
+            });
+        },
+        adminCoursePreviewTitle() {
+            return String(this.admin.courseForm.title || this.activeAdminCourse?.title || "New course").trim();
+        },
+        adminCoursePreviewSummary() {
+            const summary = String(this.admin.courseForm.summary || this.activeAdminCourse?.summary || "").trim();
+            return summary || "A focused learning path with lessons, resources, and checks for understanding.";
+        },
+        adminCoursePreviewContent() {
+            return String(this.admin.courseForm.content || this.activeAdminCourse?.content || "").trim();
+        },
+        adminCoursePreviewModule() {
+            const draft = this.admin.moduleForm || {};
+            if (String(draft.title || draft.content || draft.resource_url || "").trim()) {
+                return {
+                    id: Number(draft.id || 0),
+                    title: String(draft.title || "Untitled lesson").trim() || "Untitled lesson",
+                    module_type: String(draft.module_type || "markdown"),
+                    content: String(draft.content || ""),
+                    resource_url: String(draft.resource_url || ""),
+                    order_index: Number(draft.order_index || 0),
+                    is_active: draft.is_active !== false,
+                    isDraft: true,
+                };
+            }
+            return this.activeAdminCourseModules[0] || null;
+        },
+        adminCoursePreviewStats() {
+            const modules = this.activeAdminCourseModules;
+            const activeModules = modules.filter((item) => item.is_active !== false);
+            const linkedTests = this.activeAdminCourse?.linked_tests || [];
+            const minutes = Math.max(5, activeModules.length * 8 + linkedTests.length * 12);
+            return {
+                lessons: activeModules.length,
+                tests: linkedTests.length,
+                minutes,
+            };
         },
         dashboardCourses() {
             return this.dashboard?.social_dashboard?.courses || [];
@@ -1489,6 +1556,8 @@ createApp({
                 is_active: true,
                 linked_test_id: 0,
             };
+            this.admin.selectedCourseId = 0;
+            this.resetModuleForm(0);
         },
         selectAdminCourse(courseId) {
             this.admin.selectedCourseId = Number(courseId) || 0;
@@ -1531,6 +1600,44 @@ createApp({
                 resource_url: String(module?.resource_url || ""),
                 order_index: Number(module?.order_index || 0),
                 is_active: module?.is_active !== false,
+            };
+        },
+        setCourseModuleType(moduleType) {
+            this.admin.moduleForm.module_type = String(moduleType || "markdown");
+        },
+        moduleTypeLabel(moduleType) {
+            const value = String(moduleType || "markdown");
+            if (value === "document") return "Document";
+            if (value === "presentation") return "Slides";
+            if (value === "video") return "Video";
+            return "Lesson";
+        },
+        moduleTypeIcon(moduleType) {
+            const value = String(moduleType || "markdown");
+            if (value === "document") return "bi-file-earmark-text";
+            if (value === "presentation") return "bi-easel2";
+            if (value === "video") return "bi-play-btn";
+            return "bi-journal-text";
+        },
+        adminCoursePreviewModuleNumber(module) {
+            const id = Number(module?.id || 0);
+            const index = id ? this.activeAdminCourseModules.findIndex((item) => Number(item.id) === id) : -1;
+            if (index >= 0) return index + 1;
+            return Math.max(1, Number(module?.order_index || 0) || this.activeAdminCourseModules.length + 1);
+        },
+        coursePreviewBackdropStyle(course = null) {
+            const title = String(course?.title || this.adminCoursePreviewTitle || "Course");
+            let hash = 0;
+            for (let i = 0; i < title.length; i += 1) hash = (hash * 31 + title.charCodeAt(i)) >>> 0;
+            const palettes = [
+                ["#fef3c7", "#e0f2fe", "#ffffff"],
+                ["#dcfce7", "#ffe4e6", "#ffffff"],
+                ["#f1f5f9", "#dbeafe", "#fff7ed"],
+                ["#ecfeff", "#ede9fe", "#ffffff"],
+            ];
+            const p = palettes[hash % palettes.length];
+            return {
+                background: `linear-gradient(135deg, ${p[0]} 0%, ${p[1]} 56%, ${p[2]} 100%)`,
             };
         },
         openCreateTestMode() {
@@ -2013,6 +2120,9 @@ createApp({
                     this.success = "Course created.";
                 }
                 await this.loadAdmin();
+                if (this.admin.selectedCourseId && this.activeAdminCourse) {
+                    this.prepareEditCourse(this.activeAdminCourse);
+                }
             } catch (error) {
                 this.error = error.message;
             } finally {

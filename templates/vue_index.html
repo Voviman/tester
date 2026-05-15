@@ -810,7 +810,7 @@
                         <div class="section-head">
                             <h3>{{ admin.activeTab === 'tests' ? 'Tests Available' : admin.activeTab === 'courses' ? 'Courses' : admin.activeTab === 'stats' ? 'User Statistics' : 'Users' }}</h3>
                             <span class="small muted" v-if="admin.activeTab === 'tests'">{{ filteredAdminTestConfigs.length }}</span>
-                            <span class="small muted" v-else-if="admin.activeTab === 'courses'">{{ admin.courses.length }}</span>
+                            <span class="small muted" v-else-if="admin.activeTab === 'courses'">{{ filteredAdminCourses.length }}</span>
                             <span class="small muted" v-else>{{ filteredAdminUsers.length }}</span>
                         </div>
 
@@ -822,7 +822,14 @@
                             placeholder="Search tests"
                         >
                         <input
-                            v-else-if="admin.activeTab !== 'courses'"
+                            v-else-if="admin.activeTab === 'courses'"
+                            v-model.trim="admin.courseSearchQuery"
+                            class="admin-sidebar-input"
+                            type="search"
+                            placeholder="Search courses"
+                        >
+                        <input
+                            v-else
                             v-model.trim="admin.userSearchQuery"
                             class="admin-sidebar-input"
                             type="search"
@@ -901,8 +908,9 @@
 
                         <div class="admin-catalog-list" v-else-if="admin.activeTab === 'courses'">
                             <div v-if="!admin.courses.length" class="empty small">No courses available.</div>
+                            <div v-else-if="!filteredAdminCourses.length" class="empty small">No courses match search.</div>
                             <button
-                                v-for="course in admin.courses"
+                                v-for="course in filteredAdminCourses"
                                 :key="course.id"
                                 class="admin-catalog-item compact"
                                 :class="{ active: activeAdminCourse && activeAdminCourse.id === course.id }"
@@ -1143,192 +1151,296 @@
                             </article>
                         </template>
 
-                        <article v-else-if="admin.activeTab === 'courses'" class="panel admin-user-stats-panel">
-                            <div class="section-head">
-                                <div>
-                                    <h2>Course Manager</h2>
-                                    <div class="small muted">
-                                        Create course content, link tests, and control whether the course is active.
-                                        <template v-if="activeAdminCourse">
-                                            Author {{ activeAdminCourse.author_username || 'Unknown' }} |
-                                            Approval {{ approvalLabel(activeAdminCourse) }}
-                                        </template>
+                        <article v-else-if="admin.activeTab === 'courses'" class="course-studio">
+                            <section class="course-studio-main">
+                                <div class="course-studio-hero" :style="coursePreviewBackdropStyle(activeAdminCourse)">
+                                    <div class="course-studio-hero-copy">
+                                        <span class="course-studio-kicker">{{ admin.courseFormMode === 'update' ? 'Course studio' : 'New course' }}</span>
+                                        <h2>{{ adminCoursePreviewTitle }}</h2>
+                                        <p>{{ adminCoursePreviewSummary }}</p>
                                     </div>
-                                </div>
-                                <div v-if="canManageUsers && activeAdminCourse" class="admin-test-card-actions">
-                                    <button
-                                        v-if="activeAdminCourse.approval_status !== 'approved'"
-                                        class="btn primary small"
-                                        type="button"
-                                        @click="setAdminCourseApproval(true)"
-                                        :disabled="busy"
-                                    >
-                                        Approve
-                                    </button>
-                                    <button
-                                        v-if="activeAdminCourse.approval_status !== 'rejected'"
-                                        class="btn secondary small"
-                                        type="button"
-                                        @click="setAdminCourseApproval(false)"
-                                        :disabled="busy"
-                                    >
-                                        Reject
-                                    </button>
-                                </div>
-                            </div>
-                            <div class="form-grid admin-test-form">
-                                <input v-model.trim="admin.courseForm.title" placeholder="Course title">
-                                <select v-model="admin.courseForm.is_active">
-                                    <option :value="true">active</option>
-                                    <option :value="false">inactive</option>
-                                </select>
-                                <textarea v-model.trim="admin.courseForm.summary" rows="2" placeholder="Short summary"></textarea>
-                                <textarea v-model.trim="admin.courseForm.content" rows="8" placeholder="Course content, instructions, links, or reading material"></textarea>
-                                <div class="admin-modal-actions">
-                                    <button class="btn secondary" type="button" @click="resetCourseForm" :disabled="busy">New Course</button>
-                                    <button class="btn primary" type="button" @click="saveAdminCourse" :disabled="busy">
-                                        {{ admin.courseFormMode === 'update' ? 'Update Course' : 'Create Course' }}
-                                    </button>
-                                </div>
-                            </div>
-
-                            <div v-if="activeAdminCourse" class="admin-section-manager">
-                                <div class="admin-section-head">
-                                    <h3>Modules</h3>
-                                    <span class="small muted">{{ (activeAdminCourse.modules || []).length }}</span>
-                                </div>
-                                <div class="admin-section-form">
-                                    <label class="admin-section-field section-name-field">
-                                        <span>Title</span>
-                                        <input v-model.trim="admin.moduleForm.title" placeholder="Module title">
-                                    </label>
-                                    <label class="admin-section-field">
-                                        <span>Type</span>
-                                        <select v-model="admin.moduleForm.module_type">
-                                            <option value="markdown">Markdown</option>
-                                            <option value="document">Docs/PDF</option>
-                                            <option value="presentation">PPTX</option>
-                                            <option value="video">Video</option>
-                                        </select>
-                                    </label>
-                                    <label class="admin-section-field">
-                                        <span>Order</span>
-                                        <input v-model.number="admin.moduleForm.order_index" type="number" min="0">
-                                    </label>
-                                    <label class="admin-section-field">
-                                        <span>Status</span>
-                                        <select v-model="admin.moduleForm.is_active">
-                                            <option :value="true">active</option>
-                                            <option :value="false">inactive</option>
-                                        </select>
-                                    </label>
-                                    <label class="admin-section-field admin-section-global-field">
-                                        <span>File or video URL</span>
-                                        <input v-model.trim="admin.moduleForm.resource_url" placeholder="https://...">
-                                    </label>
-                                    <label class="admin-section-field admin-section-global-field">
-                                        <span>Upload document, PPTX, or video</span>
-                                        <input
-                                            :key="courseFileInputKey"
-                                            type="file"
-                                            accept=".pdf,.doc,.docx,.ppt,.pptx,.mp4,.webm,.mov,.m4v"
-                                            @change="uploadCourseModuleFile"
-                                        >
-                                    </label>
-                                    <label class="admin-section-field admin-section-global-field">
-                                        <span>Markdown content</span>
-                                        <textarea v-model.trim="admin.moduleForm.content" rows="5" placeholder="# Heading&#10;Write module content here"></textarea>
-                                    </label>
-                                    <button class="btn primary small" type="button" @click="saveCourseModule" :disabled="busy">
-                                        {{ admin.moduleFormMode === 'update' ? 'Update Module' : 'Add Module' }}
-                                    </button>
-                                    <button class="btn secondary small" type="button" @click="resetModuleForm(activeAdminCourse.id)" :disabled="busy">
-                                        New Module
-                                    </button>
-                                </div>
-                                <div v-if="!(activeAdminCourse.modules || []).length" class="empty small">No modules yet.</div>
-                                <div v-else class="admin-catalog-list">
-                                    <div
-                                        v-for="module in activeAdminCourse.modules"
-                                        :key="`module-${module.id}`"
-                                        class="admin-catalog-item compact"
-                                    >
-                                        <strong>{{ module.order_index }}. {{ module.title }}</strong>
-                                        <span class="small muted">{{ module.module_type }} | {{ module.is_active ? 'active' : 'inactive' }}</span>
-                                        <div class="admin-catalog-actions">
-                                            <button class="admin-catalog-action-btn" type="button" @click="editCourseModule(module)" :disabled="busy" aria-label="Edit module" title="Edit module">
-                                                <i class="bi bi-pencil-square" aria-hidden="true"></i>
-                                            </button>
-                                            <button class="admin-catalog-action-btn danger" type="button" @click="deleteCourseModule(module)" :disabled="busy" aria-label="Delete module" title="Delete module">
-                                                <i class="bi bi-trash3" aria-hidden="true"></i>
-                                            </button>
+                                    <div class="course-studio-stats" aria-label="Course summary">
+                                        <div>
+                                            <strong>{{ adminCoursePreviewStats.lessons }}</strong>
+                                            <span>lessons</span>
+                                        </div>
+                                        <div>
+                                            <strong>{{ adminCoursePreviewStats.tests }}</strong>
+                                            <span>tests</span>
+                                        </div>
+                                        <div>
+                                            <strong>{{ adminCoursePreviewStats.minutes }}</strong>
+                                            <span>min</span>
                                         </div>
                                     </div>
                                 </div>
-                            </div>
 
-                            <div v-if="activeAdminCourse" class="admin-section-manager">
-                                <div class="admin-section-head">
-                                    <h3>Linked Tests</h3>
-                                    <span class="small muted">{{ (activeAdminCourse.linked_tests || []).length }}</span>
-                                </div>
-                                <div class="admin-section-form">
-                                    <label class="admin-section-field section-name-field">
-                                        <span>Test</span>
-                                        <select v-model.number="admin.courseForm.linked_test_id">
-                                            <option :value="0">Select test</option>
-                                            <option v-for="cfg in admin.test_configs" :key="`link-${cfg.id}`" :value="cfg.id">
-                                                {{ cfg.topic_name }} - {{ cfg.level_name }} ({{ cfg.author_username || 'Unknown' }})
-                                            </option>
-                                        </select>
-                                    </label>
-                                    <button class="btn secondary small" type="button" @click="linkSelectedTestToCourse" :disabled="busy || !admin.courseForm.linked_test_id">
-                                        Link Test
-                                    </button>
-                                </div>
-                                <div v-if="!(activeAdminCourse.linked_tests || []).length" class="empty small">No tests linked yet.</div>
-                                <div v-else class="admin-catalog-list">
-                                    <div v-for="test in activeAdminCourse.linked_tests" :key="`linked-admin-${test.id}`" class="admin-catalog-item compact">
-                                        <strong>{{ test.topic_name }} - {{ test.level_name }}</strong>
-                                        <span class="small muted">{{ test.question_count }} questions | Author {{ test.author_username || 'Unknown' }}</span>
-                                        <button class="btn secondary small" type="button" @click="unlinkTestFromCourse(test)" :disabled="busy">Unlink</button>
+                                <section class="course-editor-card">
+                                    <div class="course-editor-card-head">
+                                        <div>
+                                            <h3>Course Details</h3>
+                                            <p class="muted small" v-if="activeAdminCourse">
+                                                Author {{ activeAdminCourse.author_username || 'Unknown' }} | {{ approvalLabel(activeAdminCourse) }}
+                                            </p>
+                                        </div>
+                                        <div class="course-editor-actions">
+                                            <select v-model="admin.courseForm.is_active" class="course-status-select" aria-label="Course status">
+                                                <option :value="true">Published</option>
+                                                <option :value="false">Draft</option>
+                                            </select>
+                                            <button class="btn secondary small" type="button" @click="resetCourseForm" :disabled="busy">
+                                                New Course
+                                            </button>
+                                            <button class="btn primary small" type="button" @click="saveAdminCourse" :disabled="busy">
+                                                {{ admin.courseFormMode === 'update' ? 'Save Course' : 'Create Course' }}
+                                            </button>
+                                        </div>
                                     </div>
-                                </div>
-                            </div>
 
-                            <div v-if="canManageUsers" class="admin-section-manager">
-                                <div class="admin-section-head">
-                                    <h3>Closed Test Access</h3>
+                                    <div class="course-detail-grid">
+                                        <label class="course-field course-field-wide">
+                                            <span>Title</span>
+                                            <input v-model.trim="admin.courseForm.title" placeholder="Example: Fleet Safety Fundamentals">
+                                        </label>
+                                        <label class="course-field">
+                                            <span>Visibility</span>
+                                            <select v-model="admin.courseForm.is_active">
+                                                <option :value="true">Learners can access</option>
+                                                <option :value="false">Keep hidden</option>
+                                            </select>
+                                        </label>
+                                        <label class="course-field course-field-wide">
+                                            <span>Short summary</span>
+                                            <textarea v-model.trim="admin.courseForm.summary" rows="3" placeholder="What learners will gain from this course"></textarea>
+                                        </label>
+                                        <label class="course-field course-field-wide">
+                                            <span>Welcome message</span>
+                                            <textarea v-model.trim="admin.courseForm.content" rows="5" placeholder="Set the tone, outcomes, and any prerequisites"></textarea>
+                                        </label>
+                                    </div>
+
+                                    <div v-if="canManageUsers && activeAdminCourse" class="course-approval-strip">
+                                        <span class="small muted">Review state: {{ approvalLabel(activeAdminCourse) }}</span>
+                                        <div>
+                                            <button
+                                                v-if="activeAdminCourse.approval_status !== 'approved'"
+                                                class="btn primary small"
+                                                type="button"
+                                                @click="setAdminCourseApproval(true)"
+                                                :disabled="busy"
+                                            >
+                                                Approve
+                                            </button>
+                                            <button
+                                                v-if="activeAdminCourse.approval_status !== 'rejected'"
+                                                class="btn secondary small"
+                                                type="button"
+                                                @click="setAdminCourseApproval(false)"
+                                                :disabled="busy"
+                                            >
+                                                Reject
+                                            </button>
+                                        </div>
+                                    </div>
+                                </section>
+
+                                <section class="course-editor-card">
+                                    <div class="course-editor-card-head">
+                                        <div>
+                                            <h3>Curriculum</h3>
+                                            <p class="muted small">{{ activeAdminCourse ? activeAdminCourseModules.length + ' lessons in this course' : 'Create the course before adding lessons' }}</p>
+                                        </div>
+                                        <button
+                                            class="btn secondary small"
+                                            type="button"
+                                            @click="resetModuleForm(activeAdminCourse?.id || 0)"
+                                            :disabled="busy || !activeAdminCourse"
+                                        >
+                                            New Lesson
+                                        </button>
+                                    </div>
+
+                                    <div v-if="activeAdminCourse" class="lesson-builder">
+                                        <div class="module-type-segment" role="group" aria-label="Lesson type">
+                                            <button
+                                                v-for="type in ['markdown', 'video', 'document', 'presentation']"
+                                                :key="type"
+                                                type="button"
+                                                :class="{ active: admin.moduleForm.module_type === type }"
+                                                @click="setCourseModuleType(type)"
+                                            >
+                                                <i :class="['bi', moduleTypeIcon(type)]" aria-hidden="true"></i>
+                                                <span>{{ moduleTypeLabel(type) }}</span>
+                                            </button>
+                                        </div>
+
+                                        <div class="lesson-form-grid">
+                                            <label class="course-field course-field-wide">
+                                                <span>Lesson title</span>
+                                                <input v-model.trim="admin.moduleForm.title" placeholder="Lesson title">
+                                            </label>
+                                            <label class="course-field">
+                                                <span>Order</span>
+                                                <input v-model.number="admin.moduleForm.order_index" type="number" min="0">
+                                            </label>
+                                            <label class="course-field">
+                                                <span>Status</span>
+                                                <select v-model="admin.moduleForm.is_active">
+                                                    <option :value="true">Visible</option>
+                                                    <option :value="false">Hidden</option>
+                                                </select>
+                                            </label>
+                                            <label class="course-field course-field-wide">
+                                                <span>Resource link</span>
+                                                <input v-model.trim="admin.moduleForm.resource_url" placeholder="Paste a video, PDF, document, or slides link">
+                                            </label>
+                                            <label class="course-upload-drop">
+                                                <input
+                                                    :key="courseFileInputKey"
+                                                    type="file"
+                                                    accept=".pdf,.doc,.docx,.ppt,.pptx,.mp4,.webm,.mov,.m4v"
+                                                    @change="uploadCourseModuleFile"
+                                                >
+                                                <i class="bi bi-cloud-arrow-up" aria-hidden="true"></i>
+                                                <span>Upload resource</span>
+                                            </label>
+                                            <label class="course-field course-field-wide">
+                                                <span>Lesson body</span>
+                                                <textarea v-model.trim="admin.moduleForm.content" rows="8" placeholder="# Key idea&#10;Write the lesson content learners will see"></textarea>
+                                            </label>
+                                        </div>
+
+                                        <div class="course-editor-actions">
+                                            <button class="btn primary small" type="button" @click="saveCourseModule" :disabled="busy">
+                                                {{ admin.moduleFormMode === 'update' ? 'Save Lesson' : 'Add Lesson' }}
+                                            </button>
+                                            <button class="btn secondary small" type="button" @click="resetModuleForm(activeAdminCourse.id)" :disabled="busy">
+                                                Clear Lesson
+                                            </button>
+                                        </div>
+
+                                        <div v-if="!activeAdminCourseModules.length" class="empty small">No lessons yet.</div>
+                                        <div v-else class="lesson-list">
+                                            <div
+                                                v-for="module in activeAdminCourseModules"
+                                                :key="`module-${module.id}`"
+                                                class="lesson-row"
+                                                :class="{ active: Number(admin.moduleForm.id || 0) === Number(module.id) }"
+                                            >
+                                                <button class="lesson-row-main" type="button" @click="editCourseModule(module)">
+                                                    <span class="lesson-order">{{ module.order_index }}</span>
+                                                    <span class="lesson-icon">
+                                                        <i :class="['bi', moduleTypeIcon(module.module_type)]" aria-hidden="true"></i>
+                                                    </span>
+                                                    <span class="lesson-title-wrap">
+                                                        <strong>{{ module.title }}</strong>
+                                                        <span class="small muted">{{ moduleTypeLabel(module.module_type) }} | {{ module.is_active ? 'visible' : 'hidden' }}</span>
+                                                    </span>
+                                                </button>
+                                                <button class="admin-catalog-action-btn danger" type="button" @click="deleteCourseModule(module)" :disabled="busy" aria-label="Delete lesson" title="Delete lesson">
+                                                    <i class="bi bi-trash3" aria-hidden="true"></i>
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div v-else class="empty small">Create or select a course to build the curriculum.</div>
+                                </section>
+
+                                <section v-if="activeAdminCourse" class="course-editor-card">
+                                    <div class="course-editor-card-head">
+                                        <div>
+                                            <h3>Tests And Access</h3>
+                                            <p class="muted small">{{ (activeAdminCourse.linked_tests || []).length }} linked checks</p>
+                                        </div>
+                                    </div>
+                                    <div class="test-link-grid">
+                                        <label class="course-field">
+                                            <span>Linked test</span>
+                                            <select v-model.number="admin.courseForm.linked_test_id">
+                                                <option :value="0">Select test</option>
+                                                <option v-for="cfg in admin.test_configs" :key="`link-${cfg.id}`" :value="cfg.id">
+                                                    {{ cfg.topic_name }} - {{ cfg.level_name }} ({{ cfg.author_username || 'Unknown' }})
+                                                </option>
+                                            </select>
+                                        </label>
+                                        <button class="btn secondary small" type="button" @click="linkSelectedTestToCourse" :disabled="busy || !admin.courseForm.linked_test_id">
+                                            Link Test
+                                        </button>
+                                    </div>
+                                    <div v-if="!(activeAdminCourse.linked_tests || []).length" class="empty small">No tests linked yet.</div>
+                                    <div v-else class="linked-test-list">
+                                        <div v-for="test in activeAdminCourse.linked_tests" :key="`linked-admin-${test.id}`" class="linked-test-pill">
+                                            <span>
+                                                <strong>{{ test.topic_name }} - {{ test.level_name }}</strong>
+                                                <small>{{ test.question_count }} questions</small>
+                                            </span>
+                                            <button class="btn secondary small" type="button" @click="unlinkTestFromCourse(test)" :disabled="busy">Unlink</button>
+                                        </div>
+                                    </div>
+
+                                    <div v-if="canManageUsers" class="access-grant-panel">
+                                        <label class="course-field">
+                                            <span>User</span>
+                                            <select v-model.number="admin.accessGrant.user_id">
+                                                <option :value="0">Select user</option>
+                                                <option v-for="user in admin.users" :key="`grant-user-${user.id}`" :value="user.id">
+                                                    {{ user.username }}
+                                                </option>
+                                            </select>
+                                        </label>
+                                        <label class="course-field">
+                                            <span>Locked test</span>
+                                            <select v-model.number="admin.accessGrant.test_config_id">
+                                                <option :value="0">Select test</option>
+                                                <option v-for="cfg in admin.test_configs.filter((item) => item.course_id)" :key="`grant-test-${cfg.id}`" :value="cfg.id">
+                                                    {{ cfg.topic_name }} - {{ cfg.level_name }}
+                                                </option>
+                                            </select>
+                                        </label>
+                                        <label class="course-field">
+                                            <span>Access</span>
+                                            <select v-model="admin.accessGrant.grant">
+                                                <option :value="true">Grant</option>
+                                                <option :value="false">Remove</option>
+                                            </select>
+                                        </label>
+                                        <button class="btn primary small" type="button" @click="saveTestAccessOverride" :disabled="busy">Save Access</button>
+                                    </div>
+                                </section>
+                            </section>
+
+                            <aside class="course-preview-sidebar" aria-label="Learner preview">
+                                <div class="course-preview-phone">
+                                    <div class="course-preview-cover" :style="coursePreviewBackdropStyle(activeAdminCourse)">
+                                        <span class="course-preview-badge">{{ admin.courseForm.is_active ? 'Published' : 'Draft' }}</span>
+                                        <h3>{{ adminCoursePreviewTitle }}</h3>
+                                        <p>{{ adminCoursePreviewSummary }}</p>
+                                    </div>
+                                    <div class="course-preview-meta">
+                                        <span><i class="bi bi-journal-text" aria-hidden="true"></i>{{ adminCoursePreviewStats.lessons }} lessons</span>
+                                        <span><i class="bi bi-clock" aria-hidden="true"></i>{{ adminCoursePreviewStats.minutes }} min</span>
+                                    </div>
+                                    <div v-if="adminCoursePreviewContent" class="course-preview-intro" v-html="renderMarkdown(adminCoursePreviewContent)"></div>
+                                    <div v-if="adminCoursePreviewModule" class="course-preview-lesson">
+                                        <div class="course-preview-lesson-head">
+                                            <span>{{ adminCoursePreviewModuleNumber(adminCoursePreviewModule) }}</span>
+                                            <div>
+                                                <strong>{{ adminCoursePreviewModule.title }}</strong>
+                                                <small>{{ moduleTypeLabel(adminCoursePreviewModule.module_type) }}</small>
+                                            </div>
+                                        </div>
+                                        <div v-if="adminCoursePreviewModule.module_type === 'video'" class="course-preview-media">
+                                            <i class="bi bi-play-fill" aria-hidden="true"></i>
+                                        </div>
+                                        <div v-else-if="adminCoursePreviewModule.resource_url" class="course-preview-file">
+                                            <i :class="['bi', moduleTypeIcon(adminCoursePreviewModule.module_type)]" aria-hidden="true"></i>
+                                            <span>Attached resource</span>
+                                        </div>
+                                        <div class="course-preview-body" v-html="renderMarkdown(adminCoursePreviewModule.content || 'Lesson content preview')"></div>
+                                    </div>
+                                    <div v-else class="course-preview-empty">Preview appears as you build.</div>
                                 </div>
-                                <div class="admin-section-form">
-                                    <label class="admin-section-field">
-                                        <span>User</span>
-                                        <select v-model.number="admin.accessGrant.user_id">
-                                            <option :value="0">Select user</option>
-                                            <option v-for="user in admin.users" :key="`grant-user-${user.id}`" :value="user.id">
-                                                {{ user.username }}
-                                            </option>
-                                        </select>
-                                    </label>
-                                    <label class="admin-section-field">
-                                        <span>Test</span>
-                                        <select v-model.number="admin.accessGrant.test_config_id">
-                                            <option :value="0">Select test</option>
-                                            <option v-for="cfg in admin.test_configs.filter((item) => item.course_id)" :key="`grant-test-${cfg.id}`" :value="cfg.id">
-                                                {{ cfg.topic_name }} - {{ cfg.level_name }}
-                                            </option>
-                                        </select>
-                                    </label>
-                                    <label class="admin-section-field">
-                                        <span>Action</span>
-                                        <select v-model="admin.accessGrant.grant">
-                                            <option :value="true">Grant access</option>
-                                            <option :value="false">Remove access</option>
-                                        </select>
-                                    </label>
-                                    <button class="btn primary small" type="button" @click="saveTestAccessOverride" :disabled="busy">Save Access</button>
-                                </div>
-                            </div>
+                            </aside>
                         </article>
 
                         <article v-else-if="admin.activeTab === 'users'" class="panel">

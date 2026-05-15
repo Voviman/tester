@@ -620,6 +620,7 @@ class CourseModuleCreateIn(BaseModel):
     module_type: str = "markdown"
     content: str = ""
     resource_url: str = ""
+    order_index: int | None = None
     is_active: bool = True
 
 
@@ -1800,7 +1801,7 @@ def admin_create_course_module(
         module_type=normalize_module_type(payload.module_type),
         content=payload.content.strip(),
         resource_url=payload.resource_url.strip(),
-        order_index=next_order,
+        order_index=payload.order_index if payload.order_index is not None else next_order,
         is_active=payload.is_active,
     )
     mark_pending_after_moderator_edit(current_user, course)
